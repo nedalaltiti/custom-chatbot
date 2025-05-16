@@ -174,3 +174,5 @@ cython_debug/
 .pypirc
 .env
 gemini-deployment-fe9ea6bb8c92.json
+.env
+gemini-deployment-fe9ea6bb8c92.json
