@@ -50,8 +50,9 @@ class FeedbackService:
             await asyncio.sleep(self.timeout_minutes * 60)
             
             # Send the feedback prompt
-            await self.send_feedback_prompt(service_url, conversation_id)
+            activity_id = await self.send_feedback_prompt(service_url, conversation_id)
             logger.info(f"Sent feedback prompt to user {user_id} after {self.timeout_minutes} minutes")
+            return activity_id
         except asyncio.CancelledError:
             logger.debug(f"Feedback prompt for user {user_id} was cancelled")
         except Exception as e:
@@ -69,7 +70,8 @@ class FeedbackService:
         feedback_card = create_feedback_card()
         
         # Send the card
-        await self.adapter.send_card(service_url, conversation_id, feedback_card)
+        activity_id = await self.adapter.send_card(service_url, conversation_id, feedback_card)
+        return activity_id
 
     def record_feedback(self, user_id, rating, suggestion=""):
         """

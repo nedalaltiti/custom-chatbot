@@ -103,6 +103,8 @@ async def handle_card_action(request: Request):
         if action_type == "submit_rating":
             # User clicked on a star - update the card visually to reflect selection
             rating = value.get("rating")
+            if rating and isinstance(rating, str) and rating.isdigit():
+                rating = int(rating)
             if rating and isinstance(rating, int) and 1 <= rating <= 5:
                 logger.info(f"User {user_id} selected rating: {rating}")
 
@@ -133,6 +135,10 @@ async def handle_card_action(request: Request):
         elif action_type == "submit_feedback":
             # For direct star selection + submission
             rating = value.get("rating")
+            
+            # Convert rating to int if it's a numeric string
+            if isinstance(rating, str) and rating.isdigit():
+                rating = int(rating)
             
             # If no rating selected, assume neutral (3)
             if not rating or not isinstance(rating, int) or rating == 0:

@@ -50,42 +50,37 @@ def create_welcome_card(user_name="there"):
     }
 
 def create_feedback_card(selected_rating: int = 0):
-    """Create a feedback card with a 5-star rating control.
+    """Create a feedback card rendered as a single horizontal row of 1-5 stars.
 
-    Args:
-        selected_rating: The star that is currently selected (1-5). Stars up to
-            this number will be rendered as filled (⭐). Others remain outline (☆).
+    • Each star is a Column with a TextBlock (⭐ or ☆) and a selectAction so it
+      behaves like a button but has *no* default Teams border.
+    • When a user taps a star we send `Action.Submit` with `action=submit_rating` &
+      the chosen rating value. The router will re-render this same card with the
+      selected stars filled.
     """
 
-    def star_text(star_idx: int) -> str:
-        """Return the correct star emoji for a given index."""
-        return "⭐" if star_idx <= selected_rating else "☆"
-
-    # Build 5 columns, one per star
-    columns = []
-    for i in range(1, 6):
-        columns.append({
+    def star_column(idx: int) -> dict:
+        filled = idx <= selected_rating
+        return {
             "type": "Column",
             "width": "auto",
+            # The Column itself is clickable
+            "selectAction": {
+                "type": "Action.Submit",
+                "data": {"action": "submit_rating", "rating": idx}
+            },
             "items": [{
-                "type": "ActionSet",
-                "actions": [{
-                    "type": "Action.Submit",
-                    "title": star_text(i),
-                    "data": {
-                        "rating": i,
-                        "action": "submit_rating"
-                    },
-                    # Make the star a bit larger for better UX
-                    "style": "default"
-                }]
+                "type": "TextBlock",
+                "text": "⭐" if filled else "☆",
+                "weight": "Bolder",
+                "size": "ExtraLarge",
+                "horizontalAlignment": "Center"
             }]
-        })
+        }
 
-    # Main card structure
     card = {
-        "type": "AdaptiveCard",
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
         "version": "1.3",
         "body": [
             {
@@ -102,7 +97,8 @@ def create_feedback_card(selected_rating: int = 0):
             {
                 "type": "ColumnSet",
                 "horizontalAlignment": "Center",
-                "columns": columns
+                "spacing": "Medium",
+                "columns": [star_column(i) for i in range(1, 6)]
             },
             {
                 "type": "Input.Text",
@@ -112,25 +108,56 @@ def create_feedback_card(selected_rating: int = 0):
             }
         ],
         "actions": [
-            # Left button – Later
             {
                 "type": "Action.Submit",
                 "title": "Later",
-                "data": {
-                    "action": "dismiss_feedback"
-                }
+                "data": {"action": "dismiss_feedback"}
             },
-            # Right button – Provide Feedback
             {
                 "type": "Action.Submit",
                 "title": "Provide Feedback",
                 "style": "positive",
-                "data": {
-                    "action": "submit_feedback",
-                    "rating": selected_rating if selected_rating else 0
-                }
+                "data": {"action": "submit_feedback", "rating": selected_rating or 0}
             }
         ]
     }
 
     return card 
+
+def create_reaction_card(action_prefix: str = "react") -> dict:
+    """Return an inline reaction bar with copy / like / dislike.
+
+    action_prefix lets the caller namespace the action if needed.
+    """
+
+    def icon(col, icon_char, action):
+        return {
+            "type": "Column",
+            "width": "auto",
+            "selectAction": {
+                "type": "Action.Submit",
+                "data": {"action": f"{action_prefix}_{action}"}
+            },
+            "items": [{
+                "type": "TextBlock",
+                "text": icon_char,
+                "size": "Large",
+                "horizontalAlignment": "Center"
+            }]
+        }
+
+    return {
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "type": "AdaptiveCard",
+        "version": "1.3",
+        "body": [{
+            "type": "ColumnSet",
+            "horizontalAlignment": "Left",
+            "spacing": "None",
+            "columns": [
+                icon("c", "\U0001F4CB", "copy"),
+                icon("u", "\U0001F44D", "like"),
+                icon("d", "\U0001F44E", "dislike")
+            ]
+        }]
+    } 

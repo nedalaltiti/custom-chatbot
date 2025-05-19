@@ -5,10 +5,13 @@ from hrbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
 from hrbot.services.gemini_service import GeminiService
 from hrbot.services.processor import ChatProcessor
 from hrbot.utils.result import Success, Error
-from hrbot.infrastructure.cards import create_welcome_card
+from hrbot.infrastructure.cards import create_welcome_card, create_feedback_card
 import logging
 import re
 import asyncio
+import json
+from pathlib import Path
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,9 @@ user_states = {}  # user_id: {"awaiting_confirmation": bool, "feedback_shown": b
 
 # In production, use Redis or DB for memory
 user_memories = {}
+
+feedback_cards = {}  # (conv_id) -> activity_id
+reaction_cards = {}
 
 class ConversationBufferMemory:
     """ConversationBufferMemory."""
@@ -122,9 +128,102 @@ async def teams_messages(
         service_url = req.serviceUrl
         conversation_id = req.conversation.get("id")
         
-        # If there's no user message (e.g., invoke activities from cards), skip processing
+        # If there's no user message (e.g., invoke activities from cards), handle card action or skip
         if not user_message.strip():
-            logger.debug("No text content in incoming activity – likely card action. Ignoring in teams_messages endpoint.")
+            # Possibly an Adaptive Card action (invoke activity)
+            if req.value:
+                action_type = req.value.get("action")
+
+                # ---------------------------------------------------
+                # Card action: user clicked "Later" / star / submit.
+                # ---------------------------------------------------
+                if action_type in {"submit_rating", "dismiss_feedback", "submit_feedback"}:
+                    # Normalise rating (may be string)
+                    rating_raw = req.value.get("rating")
+                    rating = None
+                    if isinstance(rating_raw, int):
+                        rating = rating_raw
+                    elif isinstance(rating_raw, str) and rating_raw.isdigit():
+                        rating = int(rating_raw)
+
+                    # Handle each action separately
+                    if action_type == "submit_rating" and rating:
+                        # Update card so stars stay highlighted
+                        updated_card = create_feedback_card(selected_rating=rating)
+                        act_id = feedback_cards.get(conversation_id)
+                        if act_id:
+                            await adapter.update_card(service_url, conversation_id, act_id, updated_card)
+                        else:
+                            act_id = await adapter.send_card(service_url, conversation_id, updated_card)
+                            if act_id:
+                                feedback_cards[conversation_id] = act_id
+                        # No extra message; user will press Provide Feedback.
+                        return TeamsActivityResponse(text="")
+
+                    if action_type == "dismiss_feedback":
+                        await adapter.send_message(service_url, conversation_id,
+                                                    "No problem! Feel free to provide feedback another time.")
+                        return TeamsActivityResponse(text="")
+
+                    if action_type == "submit_feedback":
+                        # Default neutral rating if not provided
+                        if not rating:
+                            rating = 3
+                        comment = req.value.get("comment", "")
+
+                        # Persist feedback
+                        feedback_service.record_feedback(user_id, rating, comment)
+
+                        # Thank-you message based on rating
+                        if rating >= 4:
+                            msg = f"Thank you for providing a {rating}-star rating! We're glad you had a good experience."
+                        elif rating <= 2:
+                            msg = f"Thank you for your {rating}-star feedback. We're sorry your experience wasn't better, and we'll work to improve."
+                        else:
+                            msg = f"Thank you for your {rating}-star feedback. We're always working to improve our services."
+
+                        await adapter.send_message(service_url, conversation_id, msg)
+
+                        # Try to update the card to show a submitted state (replace with simple TextBlock)
+                        try:
+                            submitted_card = {
+                                "type": "AdaptiveCard",
+                                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                                "version": "1.3",
+                                "body": [{
+                                    "type": "TextBlock",
+                                    "text": "✅ Feedback submitted – thank you!",
+                                    "weight": "Bolder",
+                                    "size": "Medium"
+                                }]
+                            }
+                            act_id = feedback_cards.get(conversation_id)
+                            if act_id:
+                                await adapter.update_card(service_url, conversation_id, act_id, submitted_card)
+                            else:
+                                act_id = await adapter.send_card(service_url, conversation_id, submitted_card)
+                                if act_id:
+                                    feedback_cards[conversation_id] = act_id
+                        except Exception as e:
+                            logger.debug(f"Unable to send submitted card: {e}")
+
+                        return TeamsActivityResponse(text="")
+
+                if action_type and action_type.startswith("react_"):
+                    # Reaction bar handling
+                    react = action_type.split("_", 1)[1]
+                    if react == "copy":
+                        # Echo the stored text so user can copy easily
+                        text = reaction_cards.get(req.replyToId, "") if hasattr(req, 'replyToId') else ""
+                        if text:
+                            await adapter.send_message(service_url, conversation_id, f"```{text}```")
+                    elif react in {"like", "dislike"}:
+                        logger.info(f"User {user_id} reacted {react} to bot message")
+                        # In production store this reaction.
+                    return TeamsActivityResponse(text="")
+
+            # No card action payload → nothing to do
+            logger.debug("No text and no card action payload – ignoring.")
             return TeamsActivityResponse(text="")
 
         # Log incoming message with more details
@@ -160,7 +259,9 @@ async def teams_messages(
                 await adapter.send_message(service_url, conversation_id, "Alright! Have a great day!")
                 
                 # Send the feedback card immediately
-                await feedback_service.send_feedback_prompt(service_url, conversation_id)
+                act_id = await feedback_service.send_feedback_prompt(service_url, conversation_id)
+                if act_id:
+                    feedback_cards[conversation_id] = act_id
 
                 # Conversation ended – clear memory and state
                 _clear_user_session(user_id)
@@ -232,6 +333,11 @@ async def teams_messages(
                     # No longer a first-time user
                     first_time_users.discard(user_id)
                     
+                    # Remove feedback card activity references for safety
+                    for conv, aid in list(feedback_cards.items()):
+                        if conv.startswith(user_id):
+                            feedback_cards.pop(conv, None)
+                    
                     if not success:
                         logger.error("Failed to send welcome card, falling back to text message")
                         await adapter.send_message(service_url, conversation_id, full_response)
@@ -279,6 +385,18 @@ async def teams_messages(
                 
                 # Save user state
                 user_states[user_id] = state
+                
+                # Send the main reply
+                await adapter.send_message(service_url, conversation_id, full_response)
+
+                # Add reaction bar under the reply (one per reply)
+                try:
+                    r_card = create_reaction_card()
+                    r_id = await adapter.send_card(service_url, conversation_id, r_card)
+                    if r_id:
+                        reaction_cards[r_id] = full_response  # map activity→text for copy
+                except Exception as e:
+                    logger.debug(f"Unable to send reaction bar: {e}")
                 
                 # Return the response
                 return TeamsActivityResponse(text=full_response)
@@ -478,7 +596,19 @@ def is_negative_response(message):
 # -----------------------------------------------------------
 
 def _clear_user_session(user_id: str):
-    """Remove cached memory and state for a user (conversation ended)."""
+    """Persist conversation to disk then clear cached memory/state."""
+    mem = user_memories.get(user_id)
+    if mem and mem.messages:
+        try:
+            Path("data/conversations").mkdir(parents=True, exist_ok=True)
+            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            file_path = Path(f"data/conversations/{user_id}_{ts}.json")
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(mem.messages, f, indent=2, ensure_ascii=False)
+            logger.debug(f"Archived conversation for {user_id} to {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to archive conversation for {user_id}: {e}")
+
     user_memories.pop(user_id, None)
     user_states.pop(user_id, None)
     first_time_users.discard(user_id)

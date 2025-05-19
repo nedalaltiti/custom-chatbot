@@ -245,7 +245,7 @@ class TeamsAdapter:
             logger.error(f"Error sending streaming message: {str(e)}")
             return False
 
-    async def send_card(self, service_url: str, conversation_id: str, card_content: dict) -> bool:
+    async def send_card(self, service_url: str, conversation_id: str, card_content: dict) -> str | None:
         """
         Send an adaptive card to a Teams conversation.
         
@@ -255,7 +255,7 @@ class TeamsAdapter:
             card_content: The adaptive card content
             
         Returns:
-            bool: True if successful, False otherwise
+            str | None: The activity ID of the sent card, or None if failed
         """
         try:
             logger.info(f"Sending card to conversation {conversation_id[:8]}...")
@@ -280,19 +280,51 @@ class TeamsAdapter:
                 
                 if resp.status_code >= 400:
                     logger.error(f"Error response: Status {resp.status_code} - {resp.text}")
-                    return False
+                    return None
                     
                 resp.raise_for_status()
-                logger.info(f"Successfully sent card to Teams conversation {conversation_id[:8]}...")
-                return True
+                activity_id = None
+                try:
+                    activity_id = resp.json().get("id")
+                except Exception:
+                    pass
+                logger.info(f"Successfully sent card to Teams conversation {conversation_id[:8]}... id={activity_id}")
+                return activity_id
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error sending card: {e.response.status_code} - {e.response.text}")
-            return False
+            return None
         except httpx.RequestError as e:
             logger.error(f"Request error sending card: {str(e)}")
-            return False
+            return None
         except Exception as e:
             logger.error(f"Error sending card: {str(e)}")
+            return None
+
+    async def update_card(self, service_url: str, conversation_id: str, activity_id: str, card_content: dict) -> bool:
+        """Update an existing adaptive card (PUT)."""
+        try:
+            token = await self.get_token()
+            url = f"{service_url}/v3/conversations/{conversation_id}/activities/{activity_id}"
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+            payload = {
+                "type": "message",
+                "attachments": [
+                    {
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "content": card_content
+                    }
+                ]
+            }
+
+            async with httpx.AsyncClient() as client:
+                resp = await client.put(url, headers=headers, json=payload, timeout=10.0)
+                if resp.status_code >= 400:
+                    logger.error(f"Error updating card: {resp.status_code} - {resp.text}")
+                    return False
+                return True
+        except Exception as e:
+            logger.error(f"update_card error: {e}")
             return False
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ class TeamsMessageRequest(BaseModel):
     text: Optional[str] = None
     entities: Optional[list] = None
     attachments: Optional[list] = None
+    value: Optional[Dict[str, Any]] = None
     
     class Config:
         populate_by_name = True
