@@ -13,6 +13,7 @@ import asyncio
 import os
 import json
 from typing import List, Dict, Any, AsyncGenerator, Optional, Protocol
+import time
 
 # Google Generative AI imports
 import google.generativeai as genai  # Used when API-key flow is chosen
@@ -52,59 +53,27 @@ class GeminiService:
     """
     
     def __init__(self):
-        """Initialize the Gemini service with configuration from settings."""
-        try:
-            # Configure the API
-            self.model_name = settings.gemini.model_name
-            self.temperature = settings.gemini.temperature
-            self.max_output_tokens = settings.gemini.max_output_tokens
-            
-            # Determine API key
-            api_key = settings.gemini.api_key or os.environ.get("GOOGLE_API_KEY")
-            self.use_vertex = False
-            if api_key:
-                # AI-Studio / API-key path
-                os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)  # SA JSON ignored for GenAI
-                genai.configure(api_key=api_key)
-                # Build once and reuse to avoid re-handshake latency
-                self._model = genai.GenerativeModel(
-                    model_name=self.model_name,
-                    generation_config=self.generation_config,
-                    safety_settings=self.safety_settings,
-                )
-            else:
-                # Vertex-AI path with ADC / service-account
-                self.use_vertex = True
-                aiplatform.init(project=settings.google_cloud.project_id,
-                                location=settings.google_cloud.location)
-                self._model = GenerativeModel(model_name=self.model_name)
-            
-            # Initialize the model
-            self.generation_config = {
-                "temperature": self.temperature,
-                "top_p": 1,
-                "top_k": 32,
-                "max_output_tokens": self.max_output_tokens,
-            }
-            
-            self.safety_settings = [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-            ]
-            
-            logger.info(f"Initialized Gemini service with model {self.model_name}")
-            
-        except Exception as e:
-            logger.error(f"Error initializing Gemini service: {str(e)}")
-            raise LLMError(
-                code=ErrorCode.INITIALIZATION_ERROR,
-                message=f"Failed to initialize Gemini service: {str(e)}",
-                severity="CRITICAL",
-                cause=e
-            )
-    
+        """Configure Gemini service – heavy model load deferred until first use."""
+        # Store config only
+        self.model_name = settings.gemini.model_name
+        self.temperature = settings.gemini.temperature
+        self.max_output_tokens = settings.gemini.max_output_tokens
+
+        # Generation + safety defaults
+        self.generation_config = {
+            "temperature": self.temperature, "top_p": 1, "top_k": 32,
+            "max_output_tokens": self.max_output_tokens,
+        }
+        self.safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
+        ]
+
+        self._model = None  # lazy
+        self.use_vertex = False
+
     def _get_api_key(self) -> str:
         """
         Get API key from credentials file.
@@ -165,6 +134,9 @@ class GeminiService:
             ))
         
         try:
+            # Ensure model is available
+            self._ensure_model()
+
             # Get the last message as the current query
             current_message = messages[-1]
             
@@ -247,6 +219,9 @@ class GeminiService:
             return
         
         try:
+            # Ensure model is available
+            self._ensure_model()
+
             # Get the last message as the current query
             current_message = messages[-1]
             
@@ -325,3 +300,40 @@ class GeminiService:
         except Exception as e:
             logger.error(f"Connection test failed: {str(e)}")
             return False 
+
+    # ---------------------------------------------------------------------
+    # Internal helpers
+    # ---------------------------------------------------------------------
+
+    def _ensure_model(self, retries: int = 3):
+        """Lazily create the GenerativeModel with simple exponential back-off."""
+        if self._model is not None:
+            return
+
+        delay = 1.0
+        last_err: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                api_key = settings.gemini.api_key or os.environ.get("GOOGLE_API_KEY")
+                if api_key:
+                    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+                    genai.configure(api_key=api_key)
+                    self._model = genai.GenerativeModel(
+                        model_name=self.model_name,
+                        generation_config=self.generation_config,
+                        safety_settings=self.safety_settings,
+                    )
+                    self.use_vertex = False
+                else:
+                    self.use_vertex = True
+                    aiplatform.init(project=settings.google_cloud.project_id, location=settings.google_cloud.location)
+                    self._model = GenerativeModel(model_name=self.model_name)
+                logger.info("Gemini model initialised on attempt %d", attempt)
+                return
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Gemini init attempt {attempt} failed: {e}")
+                time.sleep(delay)
+                delay *= 2
+        # After retries
+        raise LLMError(code=ErrorCode.INITIALIZATION_ERROR, message="Failed to initialise Gemini", cause=last_err) 

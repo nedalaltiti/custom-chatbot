@@ -209,18 +209,7 @@ async def teams_messages(
 
                         return TeamsActivityResponse(text="")
 
-                if action_type and action_type.startswith("react_"):
-                    # Reaction bar handling
-                    react = action_type.split("_", 1)[1]
-                    if react == "copy":
-                        # Echo the stored text so user can copy easily
-                        text = reaction_cards.get(req.replyToId, "") if hasattr(req, 'replyToId') else ""
-                        if text:
-                            await adapter.send_message(service_url, conversation_id, f"```{text}```")
-                    elif react in {"like", "dislike"}:
-                        logger.info(f"User {user_id} reacted {react} to bot message")
-                        # In production store this reaction.
-                    return TeamsActivityResponse(text="")
+                # No reaction card handling
 
             # No card action payload → nothing to do
             logger.debug("No text and no card action payload – ignoring.")
@@ -385,18 +374,6 @@ async def teams_messages(
                 
                 # Save user state
                 user_states[user_id] = state
-                
-                # Send the main reply
-                await adapter.send_message(service_url, conversation_id, full_response)
-
-                # Add reaction bar under the reply (one per reply)
-                try:
-                    r_card = create_reaction_card()
-                    r_id = await adapter.send_card(service_url, conversation_id, r_card)
-                    if r_id:
-                        reaction_cards[r_id] = full_response  # map activity→text for copy
-                except Exception as e:
-                    logger.debug(f"Unable to send reaction bar: {e}")
                 
                 # Return the response
                 return TeamsActivityResponse(text=full_response)

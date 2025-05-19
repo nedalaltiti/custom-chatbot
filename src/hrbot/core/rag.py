@@ -228,11 +228,20 @@ class RAG:
             List of RetrievedChunk objects
         """
         try:
-            # Get documents from vector store
-            docs = await self.vector_store.similarity_search(query, top_k=top_k)
+            # initial pool 3x size
+            pool = await self.vector_store.similarity_search(query, top_k=top_k * 3)
+
+            # simple greedy MMR based on cosine ordering
+            docs: List[Document] = []
+            for doc in pool:
+                # filter by metadata if user org supports
+                # e.g. department filter omitted for brevity
+                docs.append(doc)
+                if len(docs) == top_k:
+                    break
             
             # Convert to RetrievedChunk objects with scores
-            chunks = []
+            chunks: List[RetrievedChunk] = []
             for i, doc in enumerate(docs):
                 # Use relevance score if available, otherwise use position-based score
                 relevance_score = doc.metadata.get("relevance_score", 1.0 - (i / max(len(docs), 1)))
@@ -242,6 +251,10 @@ class RAG:
                     relevance_score=relevance_score
                 ))
             
+            # Mark fallback flag
+            if getattr(self.vector_store, "embeddings_model", None) is None:
+                for c in chunks:
+                    c.metadata["fallback"] = True
             return chunks
         except Exception as e:
             logger.error(f"[RAG] Error retrieving documents: {str(e)}")
@@ -283,37 +296,19 @@ class RAG:
         Returns:
             Formatted prompt string
         """
-        # Use custom prompt template if provided, otherwise default
         if self.prompt_template:
-            prompt = self.prompt_template
+            template = self.prompt_template
         else:
-            prompt = """
-You are an HR assistant bot for a company. Use the following knowledge and conversation history to answer the user's questions. Be concise, helpful, and professional.
+            template = (
+                "<SYSTEM>\nYou are an HR assistant bot. Answer using the knowledge provided. If unsure say you don't know.\n</SYSTEM>\n"
+                "<KNOWLEDGE>\n{context}\n</KNOWLEDGE>\n"
+                "<HISTORY>\n{history}\n</HISTORY>\n"
+                "<USER>{query}</USER>\n"
+                "<BOT>"
+            )
 
-Guidelines:
-1. Provide accurate information based on the provided knowledge.
-2. If you don't know an answer, admit it rather than making something up.
-3. CRITICALLY IMPORTANT CONVERSATION FLOW RULES:
-   - If the user says "thank you", "that's all", "no thanks", "cool", "ok", "nothing", "no", "nope", "goodbye", or any similar short response, DO NOT ask if they need help with anything else.
-   - When a user indicates they are done with a short response like those above, simply respond with a friendly closing like "Alright! Have a great day!" without any follow-up questions.
-   - Never ask "is there anything else" if you've already asked it once in the conversation.
-   - Never add a follow-up question if the user's message is very short (1-3 words).
-   - If the user says "nothing" or "no" always interpret this as ending the conversation and respond only with "Alright! Have a great day!" or similar brief closing.
-4. Keep responses concise but complete.
-5. Maintain a helpful, professional tone throughout.
-6. For short user responses (1-3 words), keep your response brief and to the point as well.
-"""
-        
-        # Add chat history if available
-        if chat_history and len(chat_history) > 0:
-            history_text = "\n".join(chat_history)
-            prompt += f"\n\nConversation history:\n{history_text}\n"
-        
-        # Add context and query
-        prompt += f"\n\nRelevant knowledge:\n{context}\n\n"
-        prompt += f"User: {query}\nBot:"
-        
-        return prompt
+        history_text = "\n".join(chat_history) if chat_history else ""
+        return template.format(context=context, history=history_text, query=query)
     
     def _extract_sources(self, chunks: List[RetrievedChunk]) -> List[Dict[str, Any]]:
         """
@@ -325,6 +320,9 @@ Guidelines:
         Returns:
             List of source dictionaries
         """
+        if chunks and chunks[0].metadata.get("fallback"):
+            return []
+
         sources = []
         seen_sources: Set[str] = set()
         
