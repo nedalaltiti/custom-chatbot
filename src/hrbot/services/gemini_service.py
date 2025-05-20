@@ -12,7 +12,7 @@ import logging
 import asyncio
 import os
 import json
-from typing import List, Dict, Any, AsyncGenerator, Optional, Protocol
+from typing import List, Dict, AsyncGenerator
 import time
 
 # Google Generative AI imports
@@ -20,7 +20,6 @@ import google.generativeai as genai  # Used when API-key flow is chosen
 from google.api_core import exceptions as google_api_exceptions
 from google.auth import exceptions as google_auth_exceptions
 
-# Vertex-AI imports (for service-account flow)
 from google.cloud import aiplatform
 from vertexai.preview.generative_models import GenerativeModel
 
@@ -29,18 +28,6 @@ from hrbot.utils.error import LLMError, ErrorCode
 from hrbot.config.settings import settings
 
 logger = logging.getLogger(__name__)
-
-# Define LLMProvider Protocol for type hinting
-class LLMProvider(Protocol):
-    """Protocol defining the interface for LLM providers."""
-    
-    async def generate_response(self, prompt: str) -> Result[Dict[str, Any]]:
-        """Generate a response from a prompt."""
-        ...
-        
-    async def generate_response_streaming(self, prompt: str) -> AsyncGenerator[str, None]:
-        """Generate a streaming response from a prompt."""
-        ...
 
 class GeminiService:
     """
@@ -258,33 +245,6 @@ class GeminiService:
         except Exception as e:
             logger.error(f"Error in streaming response: {str(e)}")
             yield f"I'm having trouble processing your request right now: {str(e)}"
-    
-    async def generate_response(self, prompt: str) -> Result[Dict[str, Any]]:
-        """
-        Generate a response from a prompt (LLMProvider protocol method).
-        
-        Args:
-            prompt: The prompt to send to the LLM
-            
-        Returns:
-            Result containing the response or error
-        """
-        # Simply forward to analyze_messages with a single message
-        return await self.analyze_messages([prompt])
-    
-    async def generate_response_streaming(self, prompt: str) -> AsyncGenerator[str, None]:
-        """
-        Generate a streaming response from a prompt (LLMProvider protocol method).
-        
-        Args:
-            prompt: The prompt to send to the LLM
-            
-        Yields:
-            Chunks of the response as they are generated
-        """
-        # Forward to analyze_messages_streaming with a single message
-        async for chunk in self.analyze_messages_streaming([prompt]):
-            yield chunk
     
     async def test_connection(self) -> bool:
         """

@@ -9,7 +9,7 @@ Currently provides:
 import logging
 from typing import Dict, List, Any, Optional, AsyncGenerator
 
-from hrbot.core.rag import LLMProvider
+from hrbot.core.rag.engine import LLMProvider
 from hrbot.services.gemini_service import GeminiService
 from hrbot.utils.result import Result
 

@@ -76,6 +76,17 @@ class FeedbackSettings:
             admin_token=get_env_var("ADMIN_TOKEN", cls.admin_token),
             feedback_timeout_minutes=get_env_var_int("FEEDBACK_TIMEOUT_MINUTES", cls.feedback_timeout_minutes),
         )
+@dataclass(frozen=True)
+class HRSupportSettings:
+    url: str = "https://hrsupport.usclarity.com/support/home"
+    domain: str = "hrsupport.usclarity.com"
+
+    @classmethod
+    def from_environment(cls) -> "HRSupportSettings":
+        return cls(
+            url=get_env_var("HR_SUPPORT_URL", cls.url),
+            domain=get_env_var("HR_SUPPORT_DOMAIN", cls.domain),
+        )
 
 @dataclass(frozen=True)
 class AppSettings:
@@ -89,6 +100,7 @@ class AppSettings:
     teams: TeamsSettings = field(default_factory=TeamsSettings.from_environment)
     google_cloud: GoogleCloudSettings = field(default_factory=GoogleCloudSettings.from_environment)
     feedback: FeedbackSettings = field(default_factory=FeedbackSettings.from_environment)
+    hr_support: HRSupportSettings = field(default_factory=HRSupportSettings.from_environment)
 
     @classmethod
     def from_environment(cls) -> "AppSettings":

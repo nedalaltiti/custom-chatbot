@@ -12,8 +12,8 @@ from typing import List, Dict, Any, Optional, AsyncGenerator
 import asyncio
 
 from hrbot.services.gemini_service import GeminiService
-from hrbot.core.rag import RAG
-from hrbot.core.rag_adapter import LLMServiceAdapter
+from hrbot.core.adapters.llm_gemini import LLMServiceAdapter   
+from hrbot.core.rag.engine import RAG
 from hrbot.utils.result import Result, Success
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ class ChatProcessor:
         self.llm_service = llm_service or GeminiService()
         # Create an adapter so RAG can use the same LLM interface
         self.rag = RAG(llm_provider=LLMServiceAdapter(self.llm_service))
+        
         logger.info("ChatProcessor initialised (RAG enabled)")
     
     async def process_message(self, 
@@ -55,23 +56,36 @@ class ChatProcessor:
         Returns:
             Result containing the LLM response or error
         """
-        # Use RAG heuristics to decide
-        if self.rag.should_use_rag(user_message, chat_history):
-            logger.info("RAG selected for query")
-            return await self.rag.query(user_message, user_id, chat_history)
-        # Plain LLM flow
-        messages = [] if not chat_history else list(chat_history)
-        messages.append(user_message)
-        result = await self.llm_service.analyze_messages(messages)
-        
-        # Add metadata to result if successful
-        if result.is_success():
-            response_data = result.unwrap()
-            response_data["used_rag"] = False
-            response_data["user_id"] = user_id
-            return Success(response_data)
-        
-        return result
+        # Always use RAG; if no knowledge found return safe response
+        rag_result = await self.rag.query(
+            user_message,
+            user_id=user_id,
+            chat_history=chat_history,
+        )
+
+        if rag_result.is_success():
+            payload = rag_result.unwrap()
+            # If no sources returned, respond with safe fallback
+            if not payload.get("sources"):
+                return Success({
+                    "response": (
+                        "Kindly contact the HR department for further details.\n\n"
+                        "Open a support ticket ➜ https://hrsupport.usclarity.com/support/home"
+                    ),
+                    "used_rag": True,
+                    "user_id": user_id,
+                })
+            return rag_result
+
+        # If RAG errored, return generic refusal
+        return Success({
+            "response": (
+                "Kindly contact the HR department for further details.\n\n"
+                "Open a support ticket ➜ https://hrsupport.usclarity.com/support/home"
+            ),
+            "used_rag": True,
+            "user_id": user_id,
+        })
         
     async def process_message_streaming(self,
                                       user_message: str,
@@ -89,7 +103,10 @@ class ChatProcessor:
             Chunks of the response as they are generated
         """
         if self.rag.should_use_rag(user_message, chat_history):
-            async for chunk in self.rag.query_streaming(user_message, user_id, chat_history):
+            async for chunk in self.rag.query_streaming(
+                user_message,
+                chat_history=chat_history,
+            ):
                 yield chunk
             return
         messages = [] if not chat_history else list(chat_history)

@@ -2,54 +2,90 @@
 Adaptive card templates for Teams messages.
 """
 
-def create_welcome_card(user_name="there"):
-    """Create a welcome card for new users."""
+from hrbot.infrastructure.cards_brand import BRAND, brand_header
+
+def _brand_header(title: str):
+    """Return a ColumnSet header with logo and title using brand colours."""
+    logo_url = "https://raw.githubusercontent.com/your-org/assets/main/logo.png"  # replace with CDN path
+    accent = "#003C71"
     return {
-        "type": "AdaptiveCard",
+        "type": "ColumnSet",
+        "columns": [
+            {
+                "type": "Column",
+                "width": "auto",
+                "items": [{
+                    "type": "Image",
+                    "url": logo_url,
+                    "size": "Small",
+                    "style": "Person"
+                }]
+            },
+            {
+                "type": "Column",
+                "width": "stretch",
+                "verticalContentAlignment": "Center",
+                "items": [{
+                    "type": "TextBlock",
+                    "text": title,
+                    "weight": "Bolder",
+                    "size": "Medium",
+                    "color": "Accent",
+                    "wrap": True
+                }]
+            }
+        ],
+        "spacing": "None",
+        "separator": True,
+        "style": "emphasis",
+        "backgroundImage": {
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4XmP8z8BQDwAFgwJ/lAxAbwAAAABJRU5ErkJggg==",
+            "fillMode": "Cover",
+            "horizontalAlignment": "Left",
+            "verticalAlignment": "Center"
+        }
+    }
+
+def _list_item(emoji: str, text: str) -> dict:
+    return {
+        "type": "ColumnSet",
+        "spacing": "Small",
+        "columns": [
+            {"type": "Column", "width": "auto", "items": [{"type": "TextBlock", "text": emoji, "size": "Medium"}]},
+            {"type": "Column", "width": "stretch", "items": [{"type": "TextBlock", "text": text, "wrap": True}]}
+        ]
+    }
+
+def create_welcome_card(user_name: str = "there") -> dict:
+    """Elegant, theme-aware welcome card with simplified greeting."""
+    return {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-        "version": "1.3",
+        "type": "AdaptiveCard",
+        "version": "1.4",
         "body": [
+            # Large, brand-coloured banner
+            brand_header(f"Hi {user_name}!"),
             {
                 "type": "TextBlock",
-                "size": "Medium",
-                "weight": "Bolder",
-                "text": f"Welcome, {user_name}!"
-            },
-            {
-                "type": "TextBlock",
-                "text": "I'm your HR Assistant! I can help you with questions about:",
-                "wrap": True
-            },
-            {
-                "type": "FactSet",
-                "facts": [
-                    {
-                        "title": "🗓️",
-                        "value": "Time off and leave policies"
-                    },
-                    {
-                        "title": "💰",
-                        "value": "Benefits and compensation"
-                    },
-                    {
-                        "title": "📝",
-                        "value": "HR processes and procedures"
-                    },
-                    {
-                        "title": "🎓",
-                        "value": "Learning and development"
-                    }
-                ]
+                "text": (
+                    "I'm your HR Assistant  👋. I'm here to help you with any "
+                    "HR-related questions or requests you may have."
+                ),
+                "wrap": True,
+                "spacing": "Medium",
             },
             {
                 "type": "TextBlock",
                 "text": "How can I assist you today?",
-                "wrap": True
-            }
-        ]
+                "wrap": True,
+                "spacing": "Medium",
+            },
+        ],
+        "backgroundColor": BRAND["bg"],
     }
 
-def create_feedback_card(selected_rating: int = 0):
+
+def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True):
     """Create a feedback card rendered as a single horizontal row of 1-5 stars.
 
     • Each star is a Column with a TextBlock (⭐ or ☆) and a selectAction so it
@@ -62,33 +98,26 @@ def create_feedback_card(selected_rating: int = 0):
     def star_column(idx: int) -> dict:
         filled = idx <= selected_rating
         return {
-            "type": "Column",
-            "width": "auto",
-            # The Column itself is clickable
-            "selectAction": {
-                "type": "Action.Submit",
-                "data": {"action": "submit_rating", "rating": idx}
-            },
+            "type": "Column", "width": "auto",
+            "selectAction": {"type": "Action.Submit",
+                             "data": {"action": "submit_rating", "rating": idx}},
             "items": [{
                 "type": "TextBlock",
-                "text": "⭐" if filled else "☆",
+                "text": "★",  # solid star
                 "weight": "Bolder",
                 "size": "ExtraLarge",
-                "horizontalAlignment": "Center"
+                "horizontalAlignment": "Center",
+                "color": "Accent" if filled else "Default"
             }]
         }
 
     card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
-        "version": "1.3",
+        "version": "1.4",
+        "backgroundColor": BRAND["bg"],
         "body": [
-            {
-                "type": "TextBlock",
-                "size": "Medium",
-                "weight": "Bolder",
-                "text": "We value your feedback!"
-            },
+            brand_header("We value your feedback"),
             {
                 "type": "TextBlock",
                 "text": "How would you rate your experience with our HR Assistant?",

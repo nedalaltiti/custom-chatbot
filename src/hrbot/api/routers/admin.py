@@ -8,17 +8,13 @@ This module provides endpoints for:
 """
 
 import os
-import json
 import logging
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
-from typing import List, Dict, Any
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from pathlib import Path
 
 from hrbot.core.chunking import save_uploaded_file, reload_knowledge_base, process_document
-from hrbot.core.chunking import get_vector_store
-from hrbot.core.rag import RAG
-from hrbot.core.rag_adapter import LLMServiceAdapter
-from hrbot.services.gemini_service import GeminiService
+from hrbot.utils.di import get_vector_store
+from hrbot.infrastructure.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +150,7 @@ async def delete_doc(filename: str):
         raise HTTPException(status_code=500, detail=f"Error deleting document: {str(e)}")
 
 @router.post("/knowledge/reload")
-async def reload_kb():
+async def reload_kb(store: VectorStore = Depends(get_vector_store)):
     """
     Reload the entire knowledge base.
     
@@ -162,6 +158,7 @@ async def reload_kb():
         Status of the reload operation
     """
     try:
+        await store.delete_collection()
         file_count = await reload_knowledge_base()
         return {
             "status": "reloaded",
@@ -221,7 +218,7 @@ async def test_rag(query: dict):
     """
     try:
         # Import here to avoid circular imports
-        from hrbot.core.rag import RAG
+        from hrbot.core.rag.engine import RAG
         from hrbot.core.rag_adapter import LLMServiceAdapter
         from hrbot.services.gemini_service import GeminiService
 
