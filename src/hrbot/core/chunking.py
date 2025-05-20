@@ -1,359 +1,244 @@
 """
-Document processing and chunking module for RAG pipeline.
-
-This module handles the processing of documents (PDF, text, etc.) into chunks
-suitable for embedding and semantic search. It includes:
-1. Document loading from various formats
-2. Text extraction with proper handling of document structure 
-3. Chunking strategies with configurable overlap
-4. Metadata preservation for proper source attribution
+Unified document-processing & chunking layer for the RAG pipeline
+─────────────────────────────────────────────────────────────────
+• Advanced text extraction (PDF, DOCX, TXT, etc.)                 – non-blocking
+• Configurable, sentence-aware chunking with overlap              – ChunkingConfig
+• Rich metadata (hash, word/char count, page numbers, …)
+• Async-safe helpers: save_uploaded_file(), reload_knowledge_base(), get_relevant_chunks()
 """
 
-import os
+from __future__ import annotations
+
+import asyncio
+import hashlib
 import logging
+import os
 import re
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union, Tuple
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import pdfplumber
 
+from hrbot.config.settings import settings
 from hrbot.core.document import Document
-
 from hrbot.infrastructure.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
-# Global vector store instance for caching
+# ───────────────────────────────────────────────────────────────
+# Globals
+# ───────────────────────────────────────────────────────────────
 _vector_store: Optional[VectorStore] = None
 
+
 def get_vector_store() -> VectorStore:
-    """Get or create the global vector store instance."""
     global _vector_store
     if _vector_store is None:
         _vector_store = VectorStore()
     return _vector_store
 
-async def process_document(file_path: str) -> List[Document]:
-    """
-    Process a document into chunks with metadata.
-    
-    Args:
-        file_path: Path to the document file
-        
-    Returns:
-        List of Document objects with text chunks and metadata
-    """
-    try:
-        # Extract text based on file type
-        file_path_obj = Path(file_path)
-        
-        if not file_path_obj.exists():
-            logger.error(f"File not found: {file_path}")
-            return []
-            
-        file_extension = file_path_obj.suffix.lower()
-        file_name = file_path_obj.name
-        
-        text = ""
-        if file_extension == ".pdf":
-            text = extract_text_from_pdf(file_path)
-        elif file_extension == ".docx":
-            text = extract_text_from_docx(file_path)
-        elif file_extension in [".txt", ".md", ".csv"]:
-            text = extract_text_from_text_file(file_path)
-        else:
-            logger.warning(f"Unsupported file type: {file_extension}")
-            return []
-            
-        if not text:
-            logger.warning(f"No text extracted from {file_path}")
-            return []
-            
-        # Create metadata
-        metadata = {
-            "source": file_name,
-            "file_path": str(file_path),
-            "file_type": file_extension,
-            "processed_at": datetime.now().isoformat()
-        }
-        
-        # Chunk the text
-        chunks = chunk_text(text, metadata)
-        
-        logger.info(f"Processed document {file_name} into {len(chunks)} chunks")
-        return chunks
-        
-    except Exception as e:
-        logger.error(f"Error processing document {file_path}: {str(e)}")
-        return []
 
-def extract_text_from_pdf(file_path: str) -> str:
-    """
-    Extract text from a PDF file.
-    
-    Args:
-        file_path: Path to the PDF file
-        
-    Returns:
-        Extracted text as a string
-    """
-    try:
-        with pdfplumber.open(file_path) as pdf:
-            pages = []
-            for i, page in enumerate(pdf.pages):
-                page_text = page.extract_text() or ""
-                if page_text:
-                    # Add page number to help with context
-                    pages.append(f"Page {i+1}:\n{page_text}")
-            
-            return "\n\n".join(pages)
-    except Exception as e:
-        logger.error(f"Error extracting text from PDF {file_path}: {str(e)}")
-        return ""
+# ───────────────────────────────────────────────────────────────
+# Config
+# ───────────────────────────────────────────────────────────────
+class ChunkingConfig:
+    def __init__(
+        self,
+        chunk_size: int = 1_000,
+        chunk_overlap: int = 200,
+        ensure_complete_sentences: bool = True,
+        max_characters_per_doc: int = 1_000_000,
+    ):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.ensure_complete_sentences = ensure_complete_sentences
+        self.max_characters_per_doc = max_characters_per_doc
 
-def extract_text_from_docx(file_path: str) -> str:
-    """
-    Extract text from a DOCX file using built-in Python libraries.
-    
-    Args:
-        file_path: Path to the DOCX file
-        
-    Returns:
-        Extracted text as a string
-    """
-    try:
-        # DOCX files are essentially ZIP files with XML content
-        import zipfile
-        import xml.etree.ElementTree as ET
-        from xml.dom import minidom
-        
-        text_content = []
-        
-        # Open the docx file as a zip
-        with zipfile.ZipFile(file_path) as docx_zip:
-            # Check if the main document.xml exists (it should in a valid DOCX)
-            if "word/document.xml" in docx_zip.namelist():
-                # Extract the XML content
-                xml_content = docx_zip.read("word/document.xml")
-                
-                # Parse the XML content
+    @classmethod
+    def from_settings(cls) -> "ChunkingConfig":
+        return cls(
+            chunk_size=getattr(settings, "chunk_size", 1_000),
+            chunk_overlap=getattr(settings, "chunk_overlap", 200),
+            ensure_complete_sentences=getattr(settings, "ensure_complete_sentences", True),
+        )
+
+
+# ───────────────────────────────────────────────────────────────
+# Extraction helpers
+# ───────────────────────────────────────────────────────────────
+async def _run_blocking(fn, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, fn, *args)
+
+
+def _extract_text_pdf(path: str) -> str:
+    with pdfplumber.open(path) as pdf:
+        pages = [
+            f"Page {i+1}:\n{p.extract_text()}"
+            for i, p in enumerate(pdf.pages)
+            if p.extract_text()
+        ]
+    return "\n\n".join(pages)
+
+
+def _extract_text_docx(path: str) -> str:
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from xml.dom import minidom
+
+    parts: list[str] = []
+
+    with zipfile.ZipFile(path) as z:
+        def _grab(xml_bytes: bytes):
+            root = ET.fromstring(xml_bytes)
+            ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+            for par in root.findall(f".//{ns}p"):
+                texts = "".join(t.text or "" for t in par.findall(f".//{ns}t"))
+                if texts:
+                    parts.append(texts)
+
+        _grab(z.read("word/document.xml"))
+
+        for item in z.namelist():
+            if item.startswith("word/") and item.endswith(".xml") and item != "word/document.xml":
                 try:
-                    # Try using ElementTree first
-                    root = ET.fromstring(xml_content)
-                    
-                    # Define the namespace (standard for DOCX files)
-                    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-                    
-                    # Find all text elements
-                    for paragraph in root.findall(f".//{namespace}p"):
-                        texts = paragraph.findall(f".//{namespace}t")
-                        paragraph_text = "".join(text.text for text in texts if text.text)
-                        if paragraph_text:
-                            text_content.append(paragraph_text)
-                
-                except:
-                    # Fallback to minidom if ElementTree fails
-                    dom = minidom.parseString(xml_content)
-                    text_nodes = dom.getElementsByTagName("w:t")
-                    for text_node in text_nodes:
-                        if text_node.firstChild and text_node.firstChild.nodeValue:
-                            text_content.append(text_node.firstChild.nodeValue)
-            
-            # Also try to extract from headers, footers, etc.
-            for item in docx_zip.namelist():
-                if item.startswith("word/") and item.endswith(".xml") and "document.xml" not in item:
-                    try:
-                        xml_content = docx_zip.read(item)
-                        dom = minidom.parseString(xml_content)
-                        text_nodes = dom.getElementsByTagName("w:t")
-                        for text_node in text_nodes:
-                            if text_node.firstChild and text_node.firstChild.nodeValue:
-                                text_content.append(text_node.firstChild.nodeValue)
-                    except:
-                        # Skip any problematic files
-                        continue
-        
-        # Join all the text with proper spacing
-        if text_content:
-            # Clean up text with basic spacing
-            result = "\n".join(text_content)
-            # Remove duplicate newlines
-            result = re.sub(r'\n+', '\n\n', result)
-            return result
-        else:
-            logger.warning(f"No text content extracted from DOCX file: {file_path}")
-            return f"[No text content could be extracted from {Path(file_path).name}]"
-            
-    except Exception as e:
-        logger.error(f"Error extracting text from DOCX {file_path}: {str(e)}")
-        return f"[Error processing {Path(file_path).name}: {str(e)}]"
+                    _grab(z.read(item))
+                except Exception:
+                    # skip bad part
+                    pass
 
-def extract_text_from_text_file(file_path: str) -> str:
-    """
-    Extract text from a plain text file.
-    
-    Args:
-        file_path: Path to the text file
-        
-    Returns:
-        Extracted text as a string
-    """
+    cleaned = re.sub(r"\n+", "\n\n", "\n".join(parts))
+    return cleaned
+
+
+def _extract_text_txt(path: str) -> str:
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(path, encoding="utf-8") as f:
             return f.read()
     except UnicodeDecodeError:
-        # Try with a different encoding if UTF-8 fails
-        try:
-            with open(file_path, 'r', encoding='latin-1') as f:
-                return f.read()
-        except Exception as e:
-            logger.error(f"Error reading text file with latin-1 encoding: {str(e)}")
-            return ""
-    except Exception as e:
-        logger.error(f"Error extracting text from file {file_path}: {str(e)}")
-        return ""
+        with open(path, encoding="latin-1") as f:
+            return f.read()
 
-def chunk_text(text: str, metadata: Dict[str, Any], *, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[Document]:
-    """
-    Split text into overlapping chunks suitable for embedding.
 
-    Args:
-        text: The full text to chunk
-        metadata: Metadata to attach to each chunk
-        chunk_size: Maximum size of each chunk (characters)
-        chunk_overlap: Overlap size between consecutive chunks
+EXTRACTORS = {
+    ".pdf": _extract_text_pdf,
+    ".docx": _extract_text_docx,
+    ".txt": _extract_text_txt,
+    ".md": _extract_text_txt,
+    ".csv": _extract_text_txt,
+}
 
-    Returns:
-        List of Document objects
-    """
-    try:
-        # Normalise whitespace
-        text = re.sub(r"\s+", " ", text).strip()
-        if not text:
-            return []
+SUPPORTED_EXT = set(EXTRACTORS.keys())
 
-        chunks: List[Document] = []
-        start = 0
-        text_length = len(text)
-        while start < text_length:
-            end = min(start + chunk_size, text_length)
-            chunk_text = text[start:end]
-            # Expand to nearest sentence boundary if possible
-            if end < text_length:
-                next_period = text.find('.', end)
-                if 0 < next_period - end < 100:  # don't jump too far
-                    end = next_period + 1
-                    chunk_text = text[start:end]
-            chunk_meta = metadata.copy()
-            chunks.append(Document(page_content=chunk_text, metadata=chunk_meta))
-            # move start forward
-            start = end - chunk_overlap  # maintain overlap
-            if start < 0:
-                start = 0
 
-        # Annotate chunk numbers
-        total = len(chunks)
-        for idx, c in enumerate(chunks, start=1):
-            c.metadata["chunk"] = idx
-            c.metadata["total_chunks"] = total
-        return chunks
-
-    except Exception as e:
-        logger.error(f"Error chunking text: {str(e)}")
-        return [Document(page_content=text, metadata=metadata)]
-
-async def get_relevant_chunks(query: str, top_k: int = 5) -> List[Document]:
-    """
-    Get chunks relevant to a query using semantic search.
-    
-    Args:
-        query: The search query
-        top_k: Number of results to return
-        
-    Returns:
-        List of Document objects with relevant text chunks
-    """
-    try:
-        logger.info(f"[VECTOR DEBUG] Getting vector store for query: {query}")
-        store = get_vector_store()
-        
-        logger.info(f"[VECTOR DEBUG] Vector store initialized: {store.initialized}")
-        logger.info(f"[VECTOR DEBUG] Vector store has {len(store.documents)} documents")
-        
-        # Perform similarity search
-        logger.info(f"[VECTOR DEBUG] Performing similarity search with top_k={top_k}")
-        results = await store.similarity_search(query, top_k=top_k)
-        
-        logger.info(f"[VECTOR DEBUG] Found {len(results)} results")
-        for i, doc in enumerate(results):
-            source = doc.metadata.get("source", "Unknown")
-            logger.info(f"[VECTOR DEBUG] Result {i+1}: Source={source}, Length={len(doc.page_content)}")
-        
-        return results
-    except Exception as e:
-        logger.error(f"[VECTOR DEBUG] Error getting relevant chunks: {str(e)}")
+# ───────────────────────────────────────────────────────────────
+# Core: process_document
+# ───────────────────────────────────────────────────────────────
+async def process_document(path: str, cfg: ChunkingConfig | None = None) -> List[Document]:
+    cfg = cfg or ChunkingConfig.from_settings()
+    p = Path(path)
+    if not p.exists():
+        logger.warning("File not found: %s", path)
         return []
 
-async def save_uploaded_file(file) -> str:
-    """
-    Save an uploaded file and process it into the knowledge base.
-    
-    Args:
-        file: The uploaded file object
-        
-    Returns:
-        File path where the document was saved
-    """
-    # Create knowledge directory if it doesn't exist
-    os.makedirs("data/knowledge/", exist_ok=True)
-    file_path = f"data/knowledge/{file.filename}"
-    
-    try:
-        # Save the file
-        with open(file_path, "wb") as f:
-            f.write(await file.read())
-            
-        logger.info(f"Saved uploaded file to {file_path}")
-        return file_path
-    except Exception as e:
-        logger.error(f"Error saving uploaded file: {str(e)}")
-        raise
+    ext = p.suffix.lower()
+    if ext not in SUPPORTED_EXT:
+        logger.warning("Unsupported file type: %s", ext)
+        return []
 
-async def reload_knowledge_base() -> int:
+    # run blocking extraction off-thread
+    text: str = await _run_blocking(EXTRACTORS[ext], str(p))
+    if not text:
+        logger.warning("No text extracted from %s", p.name)
+        return []
+
+    if len(text) > cfg.max_characters_per_doc:
+        text = text[: cfg.max_characters_per_doc]
+
+    doc_hash = hashlib.md5(text.encode()).hexdigest()
+    meta_base: Dict[str, Any] = {
+        "source": p.name,
+        "file_path": str(p),
+        "file_type": ext,
+        "processed_at": datetime.utcnow().isoformat(),
+        "doc_hash": doc_hash,
+        "char_count": len(text),
+        "word_count": len(text.split()),
+    }
+
+    chunks = _chunk(text, meta_base, cfg)
+    logger.info("Processed %s (%d chars) → %d chunks", p.name, len(text), len(chunks))
+    return chunks
+
+
+def _chunk(text: str, meta: Dict[str, Any], cfg: ChunkingConfig) -> List[Document]:
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+
+    cs, ov, ecs = cfg.chunk_size, cfg.chunk_overlap, cfg.ensure_complete_sentences
+    chunks: list[Document] = []
+    start = 0
+    while start < len(text):
+        end = min(start + cs, len(text))
+        if ecs and end < len(text):
+            nxt = text.find(".", end)
+            if 0 < nxt - end < 100:
+                end = nxt + 1
+        payload = text[start:end]
+        chunks.append(Document(page_content=payload, metadata=meta.copy()))
+        start = end - ov if end - ov > start else end
+
+    total = len(chunks)
+    for i, c in enumerate(chunks, 1):
+        c.metadata["chunk"] = i
+        c.metadata["total_chunks"] = total
+    return chunks
+
+
+# ───────────────────────────────────────────────────────────────
+# Semantic search helper
+# ───────────────────────────────────────────────────────────────
+async def get_relevant_chunks(query: str, top_k: int = 5) -> List[Document]:
+    store = get_vector_store()
+    return await store.similarity_search(query, top_k=top_k)
+
+
+# ───────────────────────────────────────────────────────────────
+# CRUD helpers for KB
+# ───────────────────────────────────────────────────────────────
+async def save_uploaded_file(file) -> str:
+    os.makedirs("data/knowledge", exist_ok=True)
+    dst = Path("data/knowledge") / file.filename
+    dst.write_bytes(await file.read())
+    logger.info("Saved file → %s", dst)
+    return str(dst)
+
+
+async def reload_knowledge_base(cfg: ChunkingConfig | None = None, concurrency: int = 4) -> int:
     """
-    Reload and re-chunk all documents in the knowledge base.
-    
-    Returns:
-        Number of documents processed
+    Re-index every file under data/knowledge/ with limited parallelism.
+    Returns number of files processed.
     """
-    try:
-        knowledge_dir = Path("data/knowledge/")
-        
-        if not knowledge_dir.exists():
-            logger.warning("Knowledge directory does not exist")
-            return 0
-            
-        # Get vector store
-        store = get_vector_store()
-        
-        # Clear existing collection
-        await store.delete_collection()
-        
-        # Process each file
-        file_count = 0
-        total_chunks = 0
-        
-        for file_path in knowledge_dir.glob("*"):
-            if file_path.is_file():
-                chunks = await process_document(str(file_path))
-                if chunks:
-                    success = await store.add_documents(chunks)
-                    if success:
-                        file_count += 1
-                        total_chunks += len(chunks)
-        
-        logger.info(f"Reloaded knowledge base: {file_count} files, {total_chunks} chunks")
-        return file_count
-    except Exception as e:
-        logger.error(f"Error reloading knowledge base: {str(e)}")
+    path = Path("data/knowledge")
+    if not path.exists():
         return 0
+
+    store = get_vector_store()
+    await store.delete_collection()
+
+    sem = asyncio.Semaphore(concurrency)
+    files = [p for p in path.iterdir() if p.is_file()]
+
+    async def _worker(p: Path):
+        async with sem:
+            return await process_document(str(p), cfg)
+
+    chunks: list[Document] = []
+    for task in asyncio.as_completed([_worker(p) for p in files]):
+        chunks.extend(await task)
+
+    if chunks:
+        await store.add_documents(chunks)
+    return len(files)
