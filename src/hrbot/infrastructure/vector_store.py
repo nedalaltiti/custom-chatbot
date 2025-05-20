@@ -13,6 +13,7 @@ import os
 import logging
 import pickle
 import numpy as np
+import asyncio
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from datetime import datetime
@@ -91,6 +92,25 @@ class VectorStore:
             self.document_embeddings = None
             self.documents = []
             self.initialized = True  # Set to true so we can still operate in fallback mode
+
+    async def warmup(self) -> None:
+        """
+        Pre-load any resources needed at runtime.
+
+        By default this just ensures the store is initialised and, if
+        embeddings are on disk, reads them once so the first real query
+        is fast.  Override in subclasses if you need heavier logic.
+        """
+        if not self.initialized:
+            self._initialize()
+
+        # Force a tiny cosine-similarity pass to pull the entire NumPy
+        # array into memory (OS cache → RAM).
+        if (
+            self.document_embeddings is not None
+            and len(self.document_embeddings) > 0
+        ):
+            _ = float(np.dot(self.document_embeddings[0], self.document_embeddings[0]))
     
     def _load_from_disk(self) -> bool:
         """
@@ -159,10 +179,10 @@ class VectorStore:
                 return False
                 
             if self.embeddings_model:
-                # Generate embeddings for documents
+                # Generate embeddings for documents (offloaded)
                 logger.info(f"[VECTOR DEBUG] Generating embeddings for {len(documents)} documents")
                 texts = [doc.page_content for doc in documents]
-                new_embeddings = self.embeddings_model.embed_documents(texts)
+                new_embeddings = await asyncio.to_thread(self.embeddings_model.embed_documents, texts)
                 
                 # Convert & normalise
                 new_embeddings_array = np.array(new_embeddings, dtype=np.float32)
@@ -217,7 +237,7 @@ class VectorStore:
                 
                 # Generate & normalise embedding for query
                 logger.info(f"[VECTOR DEBUG] Generating embedding for query: {query[:50]}...")
-                query_emb = self.embeddings_model.embed_query(query)
+                query_emb = await asyncio.to_thread(self.embeddings_model.embed_query, query)
                 query_emb = np.array(query_emb, dtype=np.float32)
                 query_emb = query_emb / (np.linalg.norm(query_emb) or 1.0)
                 similarities = np.dot(self.document_embeddings, query_emb)

@@ -1,373 +1,177 @@
 """
-This module contains the Teams adapter.
+Teams adapter — low-latency variant.
 """
 
-import httpx
+from __future__ import annotations
+
+import asyncio
 import logging
 import time
-from typing import Optional
+from typing import AsyncGenerator, Optional
+
+import httpx
+
 from hrbot.config.settings import settings
-import asyncio
 
 logger = logging.getLogger(__name__)
 
+
+_http: httpx.AsyncClient | None = None
+
+
+def _get_http() -> httpx.AsyncClient:
+    global _http
+    if _http is None or _http.is_closed:
+        _http = httpx.AsyncClient(http2=True, timeout=10.0)
+    return _http
+
+
 class TeamsAdapter:
-    """
-    Adapter for Microsoft Teams Bot Framework integration.
-    
-    Provides methods to interact with the Teams Bot Framework API,
-    including sending typing indicators and messages.
-    """
-    
-    def __init__(self):
-        """Initialize the Teams adapter with credentials from settings."""
+    SAFETY_WINDOW = 60  # refresh token 60 s before real expiry
+    TOKEN_URL = (
+        "https://login.microsoftonline.com/"
+        "botframework.com/oauth2/v2.0/token"
+    )
+
+    def __init__(self) -> None:
         self.app_id = settings.teams.app_id
         self.app_password = settings.teams.app_password
-        self.token = None
-        self.token_expiry = 0  # Unix timestamp
-        logger.info("Initialized Teams adapter")
+
+        self._token: str | None = None
+        self._token_expiry: float = 0.0
+        self._token_lock = asyncio.Lock()
+
+        logger.info("Teams adapter initialised")
 
     async def get_token(self) -> str:
-        """
-        Get OAuth token for Bot Framework, with caching and refresh.
-        
-        Returns:
-            str: The access token for Bot Framework API
-        """
-        current_time = time.time()
-        
-        # Check if token exists and is not expired (with 5 minute buffer)
-        if self.token and current_time < self.token_expiry - 300:
-            return self.token
-            
-        # Get new token
-        url = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
-        data = {
-            "grant_type": "client_credentials",
-            "client_id": self.app_id,
-            "client_secret": self.app_password,
-            "scope": "https://api.botframework.com/.default"
+        now = time.time()
+        if self._token and now < self._token_expiry - self.SAFETY_WINDOW:
+            return self._token
+
+        async with self._token_lock:
+            # another coroutine may already have refreshed it
+            if self._token and now < self._token_expiry - self.SAFETY_WINDOW:
+                return self._token
+
+            payload = {
+                "grant_type": "client_credentials",
+                "client_id": self.app_id,
+                "client_secret": self.app_password,
+                "scope": "https://api.botframework.com/.default",
+            }
+            resp = await _get_http().post(self.TOKEN_URL, data=payload)
+            resp.raise_for_status()
+
+            body = resp.json()
+            self._token = body["access_token"]
+            self._token_expiry = now + int(body.get("expires_in", 3600))
+            logger.debug("Teams OAuth token cached (expires in %ss)", body.get("expires_in"))
+            return self._token
+
+    async def send_typing(self, svc_url: str, conv_id: str) -> bool:
+        return await self._post_activity(svc_url, conv_id, {"type": "typing"})
+
+    async def send_message(self, svc_url: str, conv_id: str, text: str) -> bool:
+        payload = {"type": "message", "text": text, "textFormat": "markdown"}
+        return await self._post_activity(svc_url, conv_id, payload)
+
+    async def send_card(self, svc_url: str, conv_id: str, card: dict) -> Optional[str]:
+        payload = {
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": card,
+            }],
         }
-        
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, data=data)
-                resp.raise_for_status()
-                token_data = resp.json()
-                self.token = token_data["access_token"]
-                # Set expiry time (subtract 5 minutes for safety)
-                self.token_expiry = current_time + token_data.get("expires_in", 3600)
-                logger.info("Successfully obtained new Teams Bot Framework token")
-                return self.token
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error getting Teams token: {e.response.status_code} - {e.response.text}")
-            raise
-        except Exception as e:
-            logger.error(f"Failed to get Teams Bot Framework token: {e}")
-            raise
+        ok, activity_id = await self._post_activity(svc_url, conv_id, payload, return_id=True)
+        return activity_id if ok else None
 
-    async def send_typing(self, service_url: str, conversation_id: str) -> bool:
-        """
-        Send typing indicator to conversation.
-        
-        Args:
-            service_url: The Teams service URL
-            conversation_id: The conversation ID
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            token = await self.get_token()
-            url = f"{service_url}/v3/conversations/{conversation_id}/activities"
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            payload = {"type": "typing"}
-            
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, headers=headers, json=payload, timeout=10.0)
-                resp.raise_for_status()
-                return True
-        except Exception as e:
-            logger.error(f"Error sending typing indicator: {e}")
-            return False
-
-    async def send_message(self, service_url: str, conversation_id: str, text: str) -> bool:
-        """
-        Send text message to conversation.
-        
-        Args:
-            service_url: The Teams service URL
-            conversation_id: The conversation ID
-            text: The message text to send
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            logger.info(f"Sending message to conversation {conversation_id[:8]}...")
-            token = await self.get_token()
-            url = f"{service_url}/v3/conversations/{conversation_id}/activities"
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            
-            # Structured payload as per Microsoft Bot Framework specs
-            payload = {
-                "type": "message",
-                "text": text,
-                "textFormat": "markdown"
-            }
-            
-            async with httpx.AsyncClient() as client:
-                logger.debug(f"Sending to URL: {url}")
-                logger.debug(f"Payload: {payload}")
-                resp = await client.post(url, headers=headers, json=payload, timeout=10.0)
-                
-                if resp.status_code >= 400:
-                    logger.error(f"Error response: Status {resp.status_code} - {resp.text}")
-                    return False
-                    
-                resp.raise_for_status()
-                logger.info(f"Successfully sent message to Teams conversation {conversation_id[:8]}...")
-                return True
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error sending message: {e.response.status_code} - {e.response.text}")
-            return False
-        except httpx.RequestError as e:
-            logger.error(f"Request error sending message: {str(e)}")
-            return False
-        except Exception as e:
-            logger.error(f"Error sending message: {str(e)}")
-            return False
-
-    async def send_message_streaming(self, service_url: str, conversation_id: str, async_generator, *, initial_text: str = "...") -> bool:
-        """
-        Send messages in a streaming fashion to a Teams conversation.
-        
-        Args:
-            service_url: The Teams service URL
-            conversation_id: The conversation ID
-            async_generator: An async generator that yields text chunks
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            logger.info(f"Starting streaming message to conversation {conversation_id[:8]}...")
-            token = await self.get_token()
-            url = f"{service_url}/v3/conversations/{conversation_id}/activities"
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            
-            # Send an initial blank message (will be invisible until updated)
-            initial_id = None
-            initial_payload = {
-                "type": "message",
-                "text": initial_text or " ",
-                "textFormat": "markdown"
-            }
-            
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, headers=headers, json=initial_payload, timeout=10.0)
-                if resp.status_code >= 400:
-                    logger.error(f"Error starting streaming: {resp.status_code} - {resp.text}")
-                    return False
-                
-                # Save the activity ID for updates
-                try:
-                    initial_id = resp.json().get("id")
-                except:
-                    logger.warning("Could not get activity ID for streaming updates")
-            
-            # If we have an activity ID, use update endpoint for streaming
-            update_url = None
-            if initial_id:
-                update_url = f"{service_url}/v3/conversations/{conversation_id}/activities/{initial_id}"
-            
-            # Accumulate characters
-            full_message = ""
-            char_count = 0
-            last_update_time = time.time()
-            update_interval = 0.2  # Update every 200ms maximum
-            
-            STREAM_INTERVAL = 1.1  # Bot Framework allows ~1 request per second
-
-            async for char in async_generator:
-                full_message += char
-                char_count += 1
-                
-                current_time = time.time()
-                time_since_update = current_time - last_update_time
-                
-                # Send update at regular intervals or after collecting enough characters
-                if char_count >= 5 or time_since_update >= update_interval:
-                    update_payload = {
-                        "type": "message",
-                        "text": full_message,
-                        "textFormat": "markdown"
-                    }
-                    
-                    # If we can update the existing message, do so
-                    if update_url:
-                        async with httpx.AsyncClient() as client:
-                            resp = await client.put(update_url, headers=headers, json=update_payload, timeout=10.0)
-                            if resp.status_code >= 400:
-                                logger.warning(f"Streaming update failed, falling back to new message: {resp.status_code}")
-                                update_url = None  # Fall back to sending new messages
-                    
-                    # If we can't update, send a new message
-                    if not update_url:
-                        async with httpx.AsyncClient() as client:
-                            resp = await client.post(url, headers=headers, json=update_payload, timeout=10.0)
-                            if resp.status_code >= 400:
-                                logger.error(f"Error in streaming: {resp.status_code} - {resp.text}")
-                                return False
-                    
-                    char_count = 0  # Reset counter after update
-                    last_update_time = current_time
-            
-            # Send final message if there are any remaining characters
-            if char_count > 0:
-                final_payload = {
-                    "type": "message",
-                    "text": full_message,
-                    "textFormat": "markdown"
-                }
-                
-                if update_url:
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.put(update_url, headers=headers, json=final_payload, timeout=10.0)
-                else:
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.post(url, headers=headers, json=final_payload, timeout=10.0)
-            
-            logger.info(f"Finished streaming message to Teams conversation {conversation_id[:8]}...")
+    async def update_card(self, svc_url: str, conv_id: str, act_id: str, card: dict) -> bool:
+        token = await self.get_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities/{act_id}"
+        payload = {
+            "type": "message",
+            "attachments": [{
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": card,
+            }],
+        }
+        resp = await _get_http().put(url, headers=headers, json=payload)
+        if resp.is_success:
             return True
-            
-        except Exception as e:
-            logger.error(f"Error sending streaming message: {str(e)}")
-            return False
+        logger.warning("update_card failed %s – %s", resp.status_code, resp.text)
+        return False
 
-    async def send_card(self, service_url: str, conversation_id: str, card_content: dict) -> str | None:
-        """
-        Send an adaptive card to a Teams conversation.
-        
-        Args:
-            service_url: The Teams service URL
-            conversation_id: The conversation ID
-            card_content: The adaptive card content
-            
-        Returns:
-            str | None: The activity ID of the sent card, or None if failed
-        """
+    async def stream_message(
+        adapter: "TeamsAdapter",
+        service_url: str,
+        conversation_id: str,
+        text_generator,
+        informative: str = "Thinking…",
+    ) -> bool:
+        """Helper that routers import to stream chunked text."""
+        streamer = _TeamsStreamer(adapter, service_url, conversation_id)
         try:
-            logger.info(f"Sending card to conversation {conversation_id[:8]}...")
-            token = await self.get_token()
-            url = f"{service_url}/v3/conversations/{conversation_id}/activities"
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            
-            # Create the payload with the card
-            payload = {
-                "type": "message",
-                "attachments": [
-                    {
-                        "contentType": "application/vnd.microsoft.card.adaptive",
-                        "content": card_content
-                    }
-                ]
-            }
-            
-            async with httpx.AsyncClient() as client:
-                logger.debug(f"Sending to URL: {url}")
-                resp = await client.post(url, headers=headers, json=payload, timeout=10.0)
-                
-                if resp.status_code >= 400:
-                    logger.error(f"Error response: Status {resp.status_code} - {resp.text}")
-                    return None
-                    
-                resp.raise_for_status()
-                activity_id = None
-                try:
-                    activity_id = resp.json().get("id")
-                except Exception:
-                    pass
-                logger.info(f"Successfully sent card to Teams conversation {conversation_id[:8]}... id={activity_id}")
-                return activity_id
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error sending card: {e.response.status_code} - {e.response.text}")
-            return None
-        except httpx.RequestError as e:
-            logger.error(f"Request error sending card: {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"Error sending card: {str(e)}")
-            return None
+            await streamer.run(text_generator, informative=informative)
+            return True
+        except Exception as exc:
+            logger.error("stream_message error: %s", exc)
+            return False
+    __all__ = ["TeamsAdapter", "stream_message"]
 
-    async def update_card(self, service_url: str, conversation_id: str, activity_id: str, card_content: dict) -> bool:
-        """Update an existing adaptive card (PUT)."""
+    async def _post_activity(
+        self,
+        svc_url: str,
+        conv_id: str,
+        payload: dict,
+        *,
+        return_id: bool = False,
+    ) -> tuple[bool, Optional[str]]:
         try:
             token = await self.get_token()
-            url = f"{service_url}/v3/conversations/{conversation_id}/activities/{activity_id}"
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-            payload = {
-                "type": "message",
-                "attachments": [
-                    {
-                        "contentType": "application/vnd.microsoft.card.adaptive",
-                        "content": card_content
-                    }
-                ]
-            }
-
-            async with httpx.AsyncClient() as client:
-                resp = await client.put(url, headers=headers, json=payload, timeout=10.0)
-                if resp.status_code >= 400:
-                    logger.error(f"Error updating card: {resp.status_code} - {resp.text}")
-                    return False
-                return True
-        except Exception as e:
-            logger.error(f"update_card error: {e}")
-            return False
-
-# ---------------------------------------------------------------------------
-# Module-level streaming helper
-# ---------------------------------------------------------------------------
-
-class _TeamsStreamer:
-    """Encapsulates one streaming lifecycle for a single message."""
-
-    def __init__(self, adapter: "TeamsAdapter", service_url: str, conv_id: str):
-        self.adapter = adapter
-        self.service_url = service_url.rstrip("/")
-        self.conv_id = conv_id
-        self.stream_id: str | None = None
-        self.seq: int = 1
-        self.buffer: str = ""
-
-    async def _post(self, payload: dict) -> int:
-        try:
-            token = await self.adapter.get_token()
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            }
-            url = f"{self.service_url}/v3/conversations/{self.conv_id}/activities"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                if resp.status_code >= 400:
-                    logger.warning(f"Streaming POST failed: {resp.status_code} - {resp.text}")
-                    return resp.status_code
-                if not self.stream_id:
-                    # First call returns the activity id which doubles as streamId
+            url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities"
+            resp = await _get_http().post(url, headers=headers, json=payload)
+            if resp.is_success:
+                act_id = None
+                if return_id:
                     try:
-                        self.stream_id = resp.json().get("id")
+                        act_id = resp.json().get("id")
                     except Exception:
                         pass
-                return resp.status_code
-        except Exception as e:
-            logger.error(f"Streaming POST error: {e}")
-            return 500
+                return True, act_id
+            logger.warning("Teams POST %s – %s", resp.status_code, resp.text)
+            return False, None
+        except Exception as exc:  # pragma: no cover
+            logger.error("Teams POST error: %s", exc)
+            return False, None
 
-    async def start(self, informative: str = "Thinking…") -> bool:
-        body = {
+
+class _TeamsStreamer:
+    # STREAM_INTERVAL = 1.1   # seconds
+    MAX_BURST = 3           # immediate updates before we throttle
+    REFILL_RATE = 1.0       # tokens per second
+
+    def __init__(self, adapter: TeamsAdapter, svc_url: str, conv_id: str) -> None:
+        self.adapter = adapter
+        self.svc_url = svc_url.rstrip("/")
+        self.conv_id = conv_id
+
+        self.stream_id: str | None = None
+        self.buffer: str = ""
+        self.seq = 1
+        self.finished = False
+
+    async def _post(self, body: dict) -> bool:
+        ok, act_id = await self.adapter._post_activity(self.svc_url, self.conv_id, body, return_id=True)
+        if ok and not self.stream_id:
+            self.stream_id = act_id
+        return ok
+
+    async def run(self, gen: AsyncGenerator[str, None], informative: str) -> bool:
+        # 1) start (typing + informative text)
+        start_body = {
             "type": "typing",
             "text": informative,
             "entities": [{
@@ -376,22 +180,34 @@ class _TeamsStreamer:
                 "streamSequence": self.seq,
             }],
         }
-        status = await self._post(body)
-        if status >= 400:
+        if not await self._post(start_body):
             return False
 
-        # keep buffer consistent
         self.buffer = informative
 
-        last_update = asyncio.get_event_loop().time()
-        return True
+        tokens: float = self.MAX_BURST          # start with a full bucket
+        last_time     = time.monotonic()
 
-    async def update(self, new_text: str) -> bool:
+        # 2) incremental updates
+        async for chunk in gen:
+            self.buffer += chunk
+            now   = time.monotonic()
+            delta = now - last_time
+            tokens = min(self.MAX_BURST, tokens + delta * self.REFILL_RATE)  # refill
+            last_time = now
+
+            if tokens >= 1:
+                if not await self._update():
+                    return False
+                tokens -= 1
+
+        # 3) final
+        return await self._finish()
+
+    async def _update(self) -> bool:
         if not self.stream_id:
-            logger.error("stream_id missing during update")
             return False
         self.seq += 1
-        self.buffer = new_text
         body = {
             "type": "typing",
             "text": self.buffer,
@@ -404,10 +220,9 @@ class _TeamsStreamer:
         }
         return await self._post(body)
 
-    async def finish(self) -> bool:
-        if not self.stream_id:
-            logger.error("stream_id missing during finish")
-            return False
+    async def _finish(self) -> bool:
+        if self.finished:
+            return True
         body = {
             "type": "message",
             "text": self.buffer,
@@ -417,38 +232,5 @@ class _TeamsStreamer:
                 "streamType": "final",
             }],
         }
-        return await self._post(body)
-
-    async def run_stream(self, text_gen, informative: str = "Thinking…") -> None:
-        """High-level helper: stream generator output under Teams rules."""
-        status = await self.start(informative)
-        if status >= 400:
-            return
-
-        self.buffer = informative      # keep buffer
-        last_update = 0                # force immediate update
-
-        STREAM_INTERVAL = 1.1  # Bot Framework allows ~1 request per second
-
-        async for chunk in text_gen:
-            self.buffer += chunk
-            now = asyncio.get_event_loop().time()
-            if now - last_update >= STREAM_INTERVAL:
-                status = await self.update(self.buffer)
-                if status in (403, 429):
-                    return
-                last_update = now
-
-        await self.finish()
-
-# Adapter-level facade -------------------------------------------------------------
-
-async def stream_message(adapter: "TeamsAdapter", service_url: str, conversation_id: str, text_generator, informative: str = "Thinking…") -> bool:
-    """Helper that can be imported and used by routers to stream messages."""
-    streamer = _TeamsStreamer(adapter, service_url, conversation_id)
-    try:
-        await streamer.run_stream(text_generator, informative=informative)
-        return True
-    except Exception as e:
-        logger.error(f"stream_message error: {e}")
-        return False
+        self.finished = await self._post(body)
+        return self.finished

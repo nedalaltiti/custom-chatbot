@@ -13,7 +13,7 @@ google-cloud-aiplatform = "^1.36.0"
 pdfplumber = "^0.10"
 python-dotenv = "^1.0"
 google-generativeai = "^0.8.5"
-httpx = "^0.28.1"
+httpx = {extras = ["http2"], version = "^0.28.1"}
 pydantic-settings = "^2.9.1"
 python-multipart = "^0.0.20"
 tiktoken = "^0.5.2"

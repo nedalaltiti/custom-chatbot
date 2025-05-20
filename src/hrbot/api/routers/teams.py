@@ -1,17 +1,19 @@
 from fastapi import APIRouter, BackgroundTasks, Depends
 from hrbot.services.feedback_service import FeedbackService
-from hrbot.infrastructure.teams_adapter import TeamsAdapter, stream_message
+from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
 from hrbot.services.gemini_service import GeminiService
 from hrbot.services.processor import ChatProcessor
-from hrbot.utils.result import Success, Error
+from hrbot.utils.intent import needs_hr_ticket
 from hrbot.infrastructure.cards import create_welcome_card, create_feedback_card
+from hrbot.config.settings import settings
 import logging
 import re
 import asyncio
 import json
 from pathlib import Path
 from datetime import datetime
+from hrbot.utils.streaming import sentence_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +151,7 @@ async def teams_messages(
                     # Handle each action separately
                     if action_type == "submit_rating" and rating:
                         # Update card so stars stay highlighted
-                        updated_card = create_feedback_card(selected_rating=rating)
+                        updated_card = create_feedback_card(selected_rating=rating, interactive=False)
                         act_id = feedback_cards.get(conversation_id)
                         if act_id:
                             await adapter.update_card(service_url, conversation_id, act_id, updated_card)
@@ -227,6 +229,13 @@ async def teams_messages(
         # Get or create memory for user
         memory = await get_or_create_memory(user_id)
         
+        from hrbot.utils.intent import classify_intent
+        try:
+            intent = await classify_intent(llm_service, user_message)
+        except Exception as e:
+            logger.warning(f"Intent-classifier failed: {e}")
+            intent = "CONTINUE"
+
         # Get user state
         state = user_states.get(user_id, {
             "awaiting_confirmation": False,
@@ -238,7 +247,8 @@ async def teams_messages(
         memory.add_user_message(user_message)
         
         # Check if the message is a negative response (like "no", "nothing", etc.)
-        if is_negative_response(user_message):
+        # if is_negative_response(user_message):
+        if intent == "END" or is_negative_response(user_message):
             logger.info(f"User {user_id} indicated conversation ending")
             if not state.get("feedback_shown"):
                 logger.info(f"Showing feedback card to user {user_id}")
@@ -266,7 +276,11 @@ async def teams_messages(
         try:
             # First, generate the complete response for the memory
             logger.info("Generating response")
-            fallback_result = await chat_processor.process_message(user_message, chat_history=chat_history)
+            fallback_result = await chat_processor.process_message(
+                user_message,
+                chat_history=chat_history,
+                user_id=user_id,
+            )
             
             if fallback_result.is_success():
                 complete_answer = fallback_result.unwrap()["response"].strip()
@@ -309,6 +323,11 @@ async def teams_messages(
                 # Combine the answer with follow-up if needed
                 full_response = complete_answer + followup_question if should_add_followup else complete_answer
                 
+                if needs_hr_ticket(user_message) and settings.hr_support.domain not in full_response:
+                    full_response += (
+                        "\n\n---\nIt looks like you might need formal assistance. "
+                        f"You can create an HR support request here ➜ {settings.hr_support.url}"
+                    )
                 # Store the complete answer (without the added follow-up) in memory
                 memory.add_ai_message(complete_answer)
                 logger.debug(f"Complete answer: '{complete_answer[:30]}...' (if longer)")
@@ -349,19 +368,29 @@ async def teams_messages(
                             first_chunk = full_response[:sentence_end].lstrip()
                             remaining = full_response[sentence_end:]
 
-                            async def remainder_chars():
-                                step = 40
-                                for i in range(0, len(remaining), step):
-                                    yield remaining[i:i+step]
-                                    await asyncio.sleep(0.05)
+                            # async def remainder_chars(text: str, step: int = 40):
+                            #     for i in range(0, len(text), step):
+                            #         yield text[i : i + step]
+                            #         await asyncio.sleep(0.05)
+                                    
+                            text_gen = sentence_chunks(remaining)
 
-                            await stream_message(adapter, service_url, conversation_id, remainder_chars(), informative=first_chunk)
+                            await adapter.stream_message(
+                                service_url=service_url,
+                                conversation_id=conversation_id,
+                                text_generator=text_gen,
+                                informative=first_chunk,
+                            )
                             logger.info("Delivered response via two-phase streaming")
                         except Exception as e:
                             logger.warning(f"Streaming delivery failed: {str(e)}, falling back to simple message")
                             await adapter.send_message(service_url, conversation_id, full_response)
                     else:
-                        await adapter.send_message(service_url, conversation_id, full_response)
+                        if len(full_response) > 300:
+                            for chunk in _paginate(full_response):
+                                await adapter.send_message(service_url, conversation_id, chunk)
+                        else:
+                            await adapter.send_message(service_url, conversation_id, full_response)
                 
                 # Check if conversation appears to be ending
                 if ending_detected and not state.get("feedback_shown"):
@@ -589,3 +618,20 @@ def _clear_user_session(user_id: str):
     user_memories.pop(user_id, None)
     user_states.pop(user_id, None)
     first_time_users.discard(user_id)
+
+def _paginate(text: str, max_len: int = 280):
+    """Yield chunks <= max_len that break at sentence boundary."""
+    if len(text) <= max_len:
+        yield text
+        return
+    sentences = text.split('. ')
+    buf = ''
+    for sent in sentences:
+        seg = sent + ('' if sent.endswith('.') else '.') + ' '
+        if len(buf) + len(seg) > max_len:
+            yield buf.strip() + ' (continued)'
+            buf = seg
+        else:
+            buf += seg
+    if buf:
+        yield buf.strip()
