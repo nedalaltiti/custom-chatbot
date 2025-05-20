@@ -2,7 +2,7 @@
 name = "hrbot"
 version = "0.1.0"
 description = "HR Teams Bot with Gemini and RAG"
-authors = ["Nedal Altiti <nedala@usclarity.com>"]
+authors = ["Nedal Altiti <nedal.altiti@live.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
