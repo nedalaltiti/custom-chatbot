@@ -26,9 +26,6 @@ from hrbot.infrastructure.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
-# ───────────────────────────────────────────────────────────────
-# Globals
-# ───────────────────────────────────────────────────────────────
 _vector_store: Optional[VectorStore] = None
 
 
@@ -38,10 +35,6 @@ def get_vector_store() -> VectorStore:
         _vector_store = VectorStore()
     return _vector_store
 
-
-# ───────────────────────────────────────────────────────────────
-# Config
-# ───────────────────────────────────────────────────────────────
 class ChunkingConfig:
     def __init__(
         self,
@@ -63,10 +56,6 @@ class ChunkingConfig:
             ensure_complete_sentences=getattr(settings, "ensure_complete_sentences", True),
         )
 
-
-# ───────────────────────────────────────────────────────────────
-# Extraction helpers
-# ───────────────────────────────────────────────────────────────
 async def _run_blocking(fn, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, fn, *args)
@@ -131,10 +120,6 @@ EXTRACTORS = {
 
 SUPPORTED_EXT = set(EXTRACTORS.keys())
 
-
-# ───────────────────────────────────────────────────────────────
-# Core: process_document
-# ───────────────────────────────────────────────────────────────
 async def process_document(path: str, cfg: ChunkingConfig | None = None) -> List[Document]:
     cfg = cfg or ChunkingConfig.from_settings()
     p = Path(path)
@@ -196,25 +181,16 @@ def _chunk(text: str, meta: Dict[str, Any], cfg: ChunkingConfig) -> List[Documen
         c.metadata["total_chunks"] = total
     return chunks
 
-
-# ───────────────────────────────────────────────────────────────
-# Semantic search helper
-# ───────────────────────────────────────────────────────────────
 async def get_relevant_chunks(query: str, top_k: int = 5) -> List[Document]:
     store = get_vector_store()
     return await store.similarity_search(query, top_k=top_k)
 
-
-# ───────────────────────────────────────────────────────────────
-# CRUD helpers for KB
-# ───────────────────────────────────────────────────────────────
 async def save_uploaded_file(file) -> str:
     os.makedirs("data/knowledge", exist_ok=True)
     dst = Path("data/knowledge") / file.filename
     dst.write_bytes(await file.read())
     logger.info("Saved file → %s", dst)
     return str(dst)
-
 
 async def reload_knowledge_base(cfg: ChunkingConfig | None = None, concurrency: int = 4) -> int:
     """

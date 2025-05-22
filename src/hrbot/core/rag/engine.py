@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import (Any, AsyncGenerator, Dict, List, Optional, Protocol, Set,
                     Tuple)
 
-from hrbot.core.rag.prompt import build as build_prompt, BASE_SYSTEM
+from hrbot.core.rag.prompt import build as build_prompt
 from hrbot.infrastructure.vector_store import VectorStore
 from hrbot.utils.error import ErrorCode, RAGError
 from hrbot.utils.result import Error, Result, Success
@@ -74,14 +74,19 @@ class RAG:
         user_id: str | None = None,
         chat_history: Optional[List[str]] = None,
         top_k: Optional[int] = None,
+        system_override: Optional[str] = None,
     ) -> Result[Dict[str, Any]]:
         """Retrieve → augment → generate (single‑shot)."""
         try:
             k = top_k or self.default_top_k
             chunks = await self._retrieve_documents(user_query, k)
             context = self._format_chunks_for_prompt(chunks)
-            prompt = self._build_prompt(user_query, context, chat_history)
-
+            prompt = self._build_prompt(
+                user_query,
+                context,
+                chat_history,
+                system_override=system_override,
+            )
             if not self.llm_provider:
                 return Error(
                     RAGError(
@@ -118,12 +123,18 @@ class RAG:
         *,
         chat_history: Optional[List[str]] = None,
         top_k: Optional[int] = None,
+        system_override: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Same as :py:meth:`query` but yields the answer progressively."""
         k = top_k or self.default_top_k
         chunks = await self._retrieve_documents(user_query, k)
         context = self._format_chunks_for_prompt(chunks)
-        prompt = self._build_prompt(user_query, context, chat_history)
+        prompt = self._build_prompt(
+                user_query,
+                context,
+                chat_history,
+                system_override=system_override,
+            )
 
         if not self.llm_provider:
             yield "[LLM unavailable]"
@@ -151,25 +162,32 @@ class RAG:
                 c.metadata["fallback"] = True
         return selected
 
-
     def _build_prompt(
-        self, query: str, context: str, history: Optional[List[str]]
+        self,
+        query: str,
+        context: str,
+        history: Optional[List[str]],
+        *,
+        system_override: Optional[str] = None,  
     ) -> str:
         if self.prompt_template:
-            # Quick override – must include {context} {history} {query}
             return self.prompt_template.format(
                 context=context,
                 history="\n".join(history or []),
                 query=query,
             )
-        return build_prompt(
-            {
-                "system": BASE_SYSTEM,           
-                "context": context,
-                "history": "\n".join(history or []),
-                "query": query,
-            }
+
+        from hrbot.core.rag.prompt import BASE_SYSTEM, FLOW_RULES, TEMPLATE
+        system = system_override or BASE_SYSTEM
+
+        return TEMPLATE.format(
+            system=system,
+            flow_rules=FLOW_RULES,
+            context=context,
+            history="\n".join(history or []),
+            query=query,
         )
+
 
     @staticmethod
     def _format_chunks_for_prompt(chunks: List[RetrievedChunk]) -> str:

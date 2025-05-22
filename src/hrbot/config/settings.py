@@ -114,5 +114,5 @@ class AppSettings:
             debug=get_env_var_bool("DEBUG", cls.debug),
             cors_origins=get_env_var_list("CORS_ORIGINS", default_cors_origins),
         )
-
+    
 settings = AppSettings.from_environment()

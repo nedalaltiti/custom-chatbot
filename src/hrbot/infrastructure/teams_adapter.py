@@ -28,30 +28,30 @@ def _get_http() -> httpx.AsyncClient:
 
 class TeamsAdapter:
     SAFETY_WINDOW = 60  # refresh token 60 s before real expiry
-    TOKEN_URL = (
-        "https://login.microsoftonline.com/"
-        "botframework.com/oauth2/v2.0/token"
-    )
+    BOT_TOKEN_URL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
 
     def __init__(self) -> None:
         self.app_id = settings.teams.app_id
         self.app_password = settings.teams.app_password
 
-        self._token: str | None = None
-        self._token_expiry: float = 0.0
+        # Separate tokens for different APIs
+        self._bot_token: str | None = None
+        self._bot_token_expiry: float = 0.0
+        self._graph_token: str | None = None
+        self._graph_token_expiry: float = 0.0
         self._token_lock = asyncio.Lock()
 
         logger.info("Teams adapter initialised")
 
-    async def get_token(self) -> str:
+    async def get_bot_token(self) -> str:
+        """Get Bot Framework token for Teams messaging APIs."""
         now = time.time()
-        if self._token and now < self._token_expiry - self.SAFETY_WINDOW:
-            return self._token
+        if self._bot_token and now < self._bot_token_expiry - self.SAFETY_WINDOW:
+            return self._bot_token
 
         async with self._token_lock:
-            # another coroutine may already have refreshed it
-            if self._token and now < self._token_expiry - self.SAFETY_WINDOW:
-                return self._token
+            if self._bot_token and now < self._bot_token_expiry - self.SAFETY_WINDOW:
+                return self._bot_token
 
             payload = {
                 "grant_type": "client_credentials",
@@ -59,14 +59,72 @@ class TeamsAdapter:
                 "client_secret": self.app_password,
                 "scope": "https://api.botframework.com/.default",
             }
-            resp = await _get_http().post(self.TOKEN_URL, data=payload)
+            resp = await _get_http().post(self.BOT_TOKEN_URL, data=payload)
             resp.raise_for_status()
 
             body = resp.json()
-            self._token = body["access_token"]
-            self._token_expiry = now + int(body.get("expires_in", 3600))
-            logger.debug("Teams OAuth token cached (expires in %ss)", body.get("expires_in"))
-            return self._token
+            self._bot_token = body["access_token"]
+            self._bot_token_expiry = now + int(body.get("expires_in", 3600))
+            logger.debug("Bot Framework token cached (expires in %ss)", body.get("expires_in"))
+            return self._bot_token
+
+    async def get_graph_token(self) -> str:
+        """Get Microsoft Graph token for user profile APIs."""
+        now = time.time()
+        if self._graph_token and now < self._graph_token_expiry - self.SAFETY_WINDOW:
+            return self._graph_token
+
+        async with self._token_lock:
+            if self._graph_token and now < self._graph_token_expiry - self.SAFETY_WINDOW:
+                return self._graph_token
+
+            token_url = f"https://login.microsoftonline.com/{settings.teams.tenant_id}/oauth2/v2.0/token"
+            payload = {
+                "grant_type": "client_credentials",
+                "client_id": settings.teams.client_id or self.app_id,
+                "client_secret": settings.teams.client_secret or self.app_password,
+                "scope": "https://graph.microsoft.com/.default"
+            }
+
+            resp = await _get_http().post(token_url, data=payload)
+            resp.raise_for_status()
+
+            body = resp.json()
+            self._graph_token = body["access_token"]
+            self._graph_token_expiry = now + int(body.get("expires_in", 3600))
+            logger.debug("Graph token cached (expires in %ss)", body.get("expires_in"))
+            return self._graph_token
+        
+    async def get_user_profile(self, aad_object_id: str) -> dict:
+        """Fetch the user's Azure AD profile (displayName + jobTitle)."""
+        try:
+            token = await self.get_graph_token()  # ✅ Graph token for Graph API
+            url = (
+                f"https://graph.microsoft.com/v1.0/"
+                f"users/{aad_object_id}"
+                f"?$select=displayName,jobTitle"
+            )
+            headers = {"Authorization": f"Bearer {token}"}
+            resp = await _get_http().get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            logger.info(f"Successfully retrieved user profile for {aad_object_id}: {data}")
+            return data
+        except Exception as e:
+            logger.error(f"Error getting user profile: {str(e)}")
+            if isinstance(e, httpx.HTTPStatusError):
+                logger.error(f"HTTP Error: {e.response.status_code} - {e.response.text}")
+            return {"displayName": "Unknown", "jobTitle": "Unknown"}
+
+    async def list_user_positions(self, aad_id: str) -> list[dict]:
+        """GET https://graph.microsoft.com/beta/users/{aad_id}/profile/positions"""
+        token = await self.get_graph_token()  # ✅ Graph token for Graph API
+        url = f"https://graph.microsoft.com/beta/users/{aad_id}/profile/positions"
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = await _get_http().get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("value", [])
 
     async def send_typing(self, svc_url: str, conv_id: str) -> bool:
         return await self._post_activity(svc_url, conv_id, {"type": "typing"})
@@ -87,7 +145,7 @@ class TeamsAdapter:
         return activity_id if ok else None
 
     async def update_card(self, svc_url: str, conv_id: str, act_id: str, card: dict) -> bool:
-        token = await self.get_token()
+        token = await self.get_bot_token()  # ✅ Fixed: Bot token for Bot Framework API
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities/{act_id}"
         payload = {
@@ -102,23 +160,36 @@ class TeamsAdapter:
             return True
         logger.warning("update_card failed %s – %s", resp.status_code, resp.text)
         return False
+    
+    async def delete_activity(self, svc_url: str, conv_id: str, act_id: str) -> bool:
+        """Delete a previously-posted activity so it disappears from the chat."""
+        token = await self.get_bot_token()  # ✅ Fixed: Bot token for Bot Framework API
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type":  "application/json",
+        }
+        url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities/{act_id}"
+        resp = await _get_http().delete(url, headers=headers)
+        if resp.is_success:
+            return True
+        logger.warning("delete_activity failed %s – %s", resp.status_code, resp.text)
+        return False
 
     async def stream_message(
-        adapter: "TeamsAdapter",
+        self,
         service_url: str,
         conversation_id: str,
         text_generator,
         informative: str = "Thinking…",
     ) -> bool:
         """Helper that routers import to stream chunked text."""
-        streamer = _TeamsStreamer(adapter, service_url, conversation_id)
+        streamer = _TeamsStreamer(self, service_url, conversation_id)
         try:
             await streamer.run(text_generator, informative=informative)
             return True
         except Exception as exc:
             logger.error("stream_message error: %s", exc)
             return False
-    __all__ = ["TeamsAdapter", "stream_message"]
 
     async def _post_activity(
         self,
@@ -129,7 +200,7 @@ class TeamsAdapter:
         return_id: bool = False,
     ) -> tuple[bool, Optional[str]]:
         try:
-            token = await self.get_token()
+            token = await self.get_bot_token()  # ✅ Fixed: Bot token for Bot Framework API
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities"
             resp = await _get_http().post(url, headers=headers, json=payload)
@@ -143,13 +214,12 @@ class TeamsAdapter:
                 return True, act_id
             logger.warning("Teams POST %s – %s", resp.status_code, resp.text)
             return False, None
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             logger.error("Teams POST error: %s", exc)
             return False, None
 
 
 class _TeamsStreamer:
-    # STREAM_INTERVAL = 1.1   # seconds
     MAX_BURST = 3           # immediate updates before we throttle
     REFILL_RATE = 1.0       # tokens per second
 

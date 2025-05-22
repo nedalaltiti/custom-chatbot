@@ -41,10 +41,12 @@ class ChatProcessor:
         
         logger.info("ChatProcessor initialised (RAG enabled)")
     
-    async def process_message(self, 
-                             user_message: str, 
-                             chat_history: Optional[List[str]] = None,
-                             user_id: str = "anonymous") -> Result[Dict]:
+    async def process_message(self,
+                              user_message: str,
+                              chat_history: Optional[List[str]] = None,
+                              user_id: str = "anonymous",
+                              system_override: Optional[str] = None
+                              ) -> Result[Dict]:
         """
         Process a user message with context from chat history.
         
@@ -61,6 +63,7 @@ class ChatProcessor:
             user_message,
             user_id=user_id,
             chat_history=chat_history,
+            system_override=system_override
         )
 
         if rag_result.is_success():

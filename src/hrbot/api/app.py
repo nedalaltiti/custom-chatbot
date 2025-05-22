@@ -18,8 +18,8 @@ from fastapi.responses import JSONResponse
 from hrbot.api.routers import admin, feedback, health, teams
 from hrbot.config.settings import settings
 from hrbot.utils.di import get_vector_store         
+from hrbot.infrastructure.ingest import refresh_vector_index 
 from hrbot.utils.error import BaseError, ErrorSeverity
-
 
 
 logging.basicConfig(
@@ -38,12 +38,15 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     vector_store = get_vector_store()
     await vector_store.warmup()           # no-op if your store doesn’t need it
 
+    # If no embeddings OR there are new files, build them now
+    new_docs = await refresh_vector_index(vector_store)
+    if new_docs:
+        logger.info("Indexed %d fresh document(s) on startup", new_docs)
+
     logger.info("✅  Startup complete")
     try:
         yield
     finally:
-        logger.info("🌙  Shutting down…")
-        await vector_store.aclose()
         logger.info("👋  Goodbye")
 
 
