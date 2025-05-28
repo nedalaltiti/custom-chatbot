@@ -1,58 +1,53 @@
-"""
-Helpers for breaking a long LLM answer into visible, human-friendly
-chunks that respect Teams’ 1-request-per-second throttling.
-
-The key rule: **every chunk you yield must be *appended* to the overall
-buffer** – the adapter will prepend whatever has already been shown
-so far before sending the next typing update.
-"""
-
 from __future__ import annotations
 
-import asyncio
-import re
-from typing import AsyncGenerator
+import asyncio, re, textwrap
+from typing import AsyncGenerator, Iterator
+
+PARA_RE  = re.compile(r"(?:\r?\n){2,}")          # blank line = paragraph break
+END_PUNC = re.compile(r"[.!?][\"')\]]?\s*$")     # end-of-sentence heuristic
+TOKEN_RE = re.compile(r"(\s+)")                  # keep whitespace tokens
+
+
+def _paragraphs(text: str) -> Iterator[str]:
+    """Yield paragraphs *including* trailing blank lines."""
+    start = 0
+    for m in PARA_RE.finditer(text):
+        yield text[start : m.end()]
+        start = m.end()
+    if start < len(text):
+        yield text[start:]
 
 
 async def sentence_chunks(
     text: str,
     *,
-    min_len: int = 25,
-    max_len: int = 120,
+    avg_cps: int  = 25,          # “characters / second” target
+    throttle: int = 1,           # Teams → 1 update / s
+    max_len: int = 400,          # absolute emergency cut-off
 ) -> AsyncGenerator[str, None]:
-    """
-    Yield chunks that (1) finish a sentence if possible and
-    (2) are big enough that we don’t spam the API faster than 1 Hz.
+    """Sentence- & paragraph-aware streamer that preserves markdown."""
+    budget = avg_cps * throttle
 
-    ─ `min_len`  – don’t release a chunk until the buffer holds at least
-                   this many characters **and** ends with . ? or !.
-    ─ `max_len`  – hard-flush if we exceed this length without finding a
-                   sentence boundary (very long sentences).
-    """
-    buf: list[str] = []
+    for para in _paragraphs(text):
+        buf: list[str] = []
+        cur_len = 0
 
-    def flush() -> str | None:
-        if not buf:
-            return None
-        out = " ".join(buf) + " "
-        buf.clear()
-        return out
+        for tok in TOKEN_RE.split(para):          # keep whitespace tokens
+            buf.append(tok)
+            cur_len += len(tok)
 
-    for word in text.split():
-        buf.append(word)
+            flush_now = (
+                (cur_len >= budget and END_PUNC.search(tok)) or cur_len >= max_len
+            )
+            if flush_now:
+                yield "".join(buf)
+                buf.clear()
+                cur_len = 0
+                await asyncio.sleep(0)            # cooperative
 
-        too_long = sum(len(w) + 1 for w in buf) >= max_len
-        ends_sentence = re.search(r"[.?!]$", buf[-1])
+        if buf:                                  # remainder of the paragraph
+            yield "".join(buf)
+            await asyncio.sleep(0)
 
-        if (too_long or (ends_sentence and
-                         sum(len(w)+1 for w in buf) >= min_len)):
-            out = flush()
-            if out is not None:
-                yield out
-                await asyncio.sleep(0)        # co-operative multitask
-
-    # tail
-    out = flush()
-    if out is not None:
-        yield out
-        await asyncio.sleep(0)
+    # final micro-sleep so caller can finish cleanly
+    await asyncio.sleep(0)

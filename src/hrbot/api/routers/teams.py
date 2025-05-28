@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, BackgroundTasks
 from hrbot.services.feedback_service import FeedbackService
+from hrbot.services.message_service import MessageService
 from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
 from hrbot.services.processor import ChatProcessor
@@ -9,6 +10,8 @@ from hrbot.utils.intent import classify_intent, needs_hr_ticket
 from hrbot.infrastructure.cards import create_welcome_card, create_feedback_card
 from hrbot.config.settings import settings
 from hrbot.utils.streaming import sentence_chunks
+from uuid import uuid4
+from hrbot.services.session_tracker import session_tracker 
 
 import logging, json, re
 from pathlib import Path
@@ -20,6 +23,7 @@ router           = APIRouter()
 adapter          = TeamsAdapter()
 feedback_service = FeedbackService()
 chat_processor   = ChatProcessor()
+message_service  = MessageService()
 
 # in-memory state
 first_time_users = set()    # user_ids pending their first greeting
@@ -43,11 +47,6 @@ async def get_or_create_memory(user_id: str) -> ConversationBufferMemory:
     if user_id not in user_memories:
         user_memories[user_id] = ConversationBufferMemory()
         first_time_users.add(user_id)
-        user_states[user_id] = {
-            "awaiting_confirmation": False,
-            "feedback_shown": False,
-            "use_streaming": True,
-        }
     return user_memories[user_id]
 
 
@@ -57,24 +56,20 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     user_id      = req.from_.id
     user_name    = req.from_.name
     aad_object_id = req.from_.aad_object_id
-    service_url  = req.serviceUrl
-    conv_id      = req.conversation.get("id")
-    state        = user_states.setdefault(user_id, {
-        "awaiting_confirmation": False,
-        "feedback_shown": False,
-        "use_streaming": True,
-    })
-
-    # try:
-    #     # pull the list of workPosition entries
-    #     positions = await adapter.list_user_positions(aad_object_id)
-    #     # find the one flagged as current
-    #     current = next((p for p in positions if p.get("isCurrent")), None)
-    #     # the actual title lives under detail.jobTitle
-    #     job_title = current["detail"]["jobTitle"] if current else ""
-    # except httpx.HTTPStatusError:
-    #     job_title = ""
-
+    service_url  = req.service_url
+    conv_id      = req.conversation.id
+    
+    state = user_states.get(user_id)
+    if state is None:                        # first ever message from this user
+        state = {
+            "awaiting_confirmation": False,
+            "feedback_shown":       False,
+            "use_streaming":        True,
+            "session_id":           session_tracker.get(user_id),   
+        }
+        user_states[user_id] = state          
+        first_time_users.add(user_id)
+    session_id = state["session_id"]
     try:
         profile   = await adapter.get_user_profile(aad_object_id)
         job_title = profile.get("jobTitle", "Unknown")
@@ -124,6 +119,8 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             # Mark shown and drop the card so it can’t be re-shown
             state["feedback_shown"] = True
             feedback_cards.pop(conv_id, None)
+            session_tracker.end_session(user_id)
+            state.pop("session_id", None)
             return TeamsActivityResponse(text="")
 
         # ── 3) User submitted feedback (submit_feedback) ─────────────────────────
@@ -131,9 +128,15 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             raw     = req.value.get("rating")
             rating  = int(raw) if str(raw).isdigit() else 3
             comment = (req.value.get("comment") or "").strip()
+            
 
             # Persist the feedback
-            feedback_service.record_feedback(user_id, rating, comment)
+            await feedback_service.record_feedback(
+                user_id   = user_id,
+                rating    = rating,
+                comment   = comment,
+                session_id= conv_id,
+            )
 
             # Thank-you message
             if rating >= 4:
@@ -164,6 +167,9 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 await adapter.update_card(service_url, conv_id, act_id, submitted_card)
 
             state["feedback_shown"] = True
+            session_tracker.end_session(user_id)
+            state.pop("session_id", None)
+
             return TeamsActivityResponse(text="")
 
         return TeamsActivityResponse(text="")
@@ -173,6 +179,18 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     memory = await get_or_create_memory(user_id)
     memory.add_user_message(user_message)
 
+    session_id = state["session_id"]
+
+    user_msg_id = await message_service.add_message(
+        bot_name   = "hrbot",
+        env        = "development",
+        channel    = "teams",
+        user_id    = user_id,
+        session_id = session_id,
+        role       = "user",
+        text       = user_message,
+        reply_to_id= req.reply_to_id,
+    )
     # ─── 2) “END” intent → ask for confirmation ─────────────────────────────────
     intent = await classify_intent(chat_processor.llm_service, user_message)
     if intent == "END" and not state["awaiting_confirmation"]:
@@ -200,7 +218,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             _clear_user_session(user_id)
             return TeamsActivityResponse(text="")
         state["awaiting_confirmation"] = False
-
+    
     # ─── 4) First-time welcome card ──────────────────────────────────────────────
     try:
         profile = await adapter.get_user_profile(aad_object_id)
@@ -210,47 +228,66 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
 
     if user_id in first_time_users:
         await adapter.send_typing(service_url, conv_id)
-        # card = create_welcome_card(user_name=user_name)
         card = create_welcome_card(user_name=user_name, job_title=job_title)
         await adapter.send_card(service_url, conv_id, card)
         first_time_users.remove(user_id)
         return TeamsActivityResponse(text="")
 
-    # ─── 5) Show spinner while LLM runs ─────────────────────────────────────────
+    # ─── 5) Show spinner while LLM runs ─────────────────────────────────────────  
     await adapter.send_typing(service_url, conv_id)
-    logger.info(f"[Teams] Generating response for {user_id}")
+    logger.info(f"[Teams] Generating response for %s", user_id)
+
     result = await chat_processor.process_message(
         user_message,
         chat_history=[m["content"] for m in memory.messages[:-1]],
         user_id=user_id,
         system_override=system_override
     )
-
+    
     if result.is_success():
         answer = result.unwrap()["response"].strip()
-        # strip any trailing follow-up
         answer = re.sub(
             r"\s*Is there anything else I can help you with\?\s*$",
-            "", answer, flags=re.IGNORECASE
+            "", answer, flags=re.I
         )
+
         memory.add_ai_message(answer)
 
-        if state["use_streaming"]:
-            # split into first chunk + remainder
-            end = next(
-                (i+1 for i,ch in enumerate(answer[:150]) if ch in ".?!" and i>40),
-                None
-            ) or min(len(answer), 120)
-            first, rest = answer[:end].lstrip(), answer[end:]
-            await adapter.stream_message(
-                service_url, conv_id,
-                text_generator=sentence_chunks(rest),
-                informative=first
-            )
-        else:
-            await adapter.send_typing(service_url, conv_id)
-            await adapter.send_message(service_url, conv_id, answer)
+        async def _persist_bot_msg(reply_id: int, text: str, intnt: str) -> None:
+            try:
+                await message_service.add_message(
+                    bot_name   = "hrbot",
+                    env        = "development",
+                    channel    = "teams",
+                    user_id    = user_id,
+                    session_id = session_id,
+                    role       = "bot",
+                    text       = text,
+                    intent     = intnt,
+                    reply_to_id= reply_id,  
+                )
+            except Exception as exc:
+                logger.warning("DB write (bot msg) failed: %s", exc)
+        
+        background_tasks.add_task(_persist_bot_msg, user_msg_id, answer, intent)
 
+        end = next(
+            (i + 1 for i, ch in enumerate(answer[:150]) if ch in ".?!" and i > 40),
+            None,
+        ) or min(len(answer), 120)
+
+        informative, rest = answer[:end].lstrip(), answer[end:]
+
+
+        if state["use_streaming"]:
+            await adapter.stream_message(
+            service_url,
+            conv_id,
+            text_generator=sentence_chunks(rest),
+            informative=informative,
+        )
+        else:
+            await adapter.send_message(service_url, conv_id, answer)
         # append ticket link if needed
         if needs_hr_ticket(user_message) and settings.hr_support.url not in answer:
             await adapter.send_typing(service_url, conv_id)
@@ -258,7 +295,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 service_url, conv_id,
                 f"\n\n---\nYou can create an HR ticket here ➜ {settings.hr_support.url}"
             )
-
         return TeamsActivityResponse(text="")
 
     # ─── 6) On failure ─────────────────────────────────────────────────────────

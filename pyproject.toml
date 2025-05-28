@@ -20,6 +20,9 @@ tiktoken = "^0.5.2"
 faiss-cpu = "^1.7.4"
 redis = "^5.0.4"
 langchain-core = "^0.3.60"
+psycopg2 = "^2.9.10"
+asyncpg = "^0.30.0"
+greenlet = "^3.2.2"
 
 [build-system]
 requires = ["poetry-core"]
