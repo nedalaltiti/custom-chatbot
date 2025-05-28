@@ -20,7 +20,7 @@ from hrbot.config.settings import settings
 from hrbot.utils.di import get_vector_store         
 from hrbot.infrastructure.ingest import refresh_vector_index 
 from hrbot.utils.error import BaseError, ErrorSeverity
-
+from hrbot.services.session_tracker import SessionTracker   
 
 logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
@@ -28,6 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("hrbot.app")
 
+session_tracker = SessionTracker(idle_minutes=settings.session_idle_minutes)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:

@@ -3,11 +3,16 @@ This module contains the feedback service.
 """
 
 import asyncio
+from datetime import datetime, timezone
 import logging
-from hrbot.services.feedback import save_feedback
+from uuid import uuid4
 from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.config.settings import settings
 from hrbot.infrastructure.cards import create_feedback_card
+from sqlalchemy.exc import SQLAlchemyError
+from hrbot.db.models import Rating
+from hrbot.db.session import AsyncSession
+
 
 logger = logging.getLogger(__name__)
 
@@ -73,23 +78,54 @@ class FeedbackService:
         activity_id = await self.adapter.send_card(service_url, conversation_id, feedback_card)
         return activity_id
 
-    def record_feedback(self, user_id, rating, suggestion=""):
+    async def record_feedback(
+        self,
+        user_id: str,
+        rating: int,
+        comment: str = "",
+        session_id: str | None = None,
+        bot_name: str = "hrbot",
+        env: str = "development",
+        channel: str = "teams",
+    ) -> Rating | None:
         """
         Record user feedback.
         
         Args:
             user_id: User identifier
             rating: Numeric rating (1-5)
-            suggestion: Optional feedback text
+            comment: Optional feedback text
+            session_id: Optional session ID
+            bot_name: Optional bot name
+            env: Optional environment
+            channel: Optional channel
         """
-        save_feedback(user_id, rating, suggestion)
+        utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            async with AsyncSession() as session:
+                row = Rating(
+                    bot_name        = bot_name,
+                    env             = env,
+                    channel         = channel,
+                    user_id         = user_id,
+                    session_id      = session_id or str(uuid4()),
+                    rate            = rating,
+                    feedback_comment= comment,
+                    timestamp       = utc_naive,
+                )
+                session.add(row)
+                await session.commit()
+        except SQLAlchemyError as exc:
+            logger.error("DB error saving feedback: %s", exc)
+            return None
         
         # Cancel any pending feedback task
         if user_id in self.pending_feedback and not self.pending_feedback[user_id].done():
-            self.pending_feedback[user_id].cancel()
-            del self.pending_feedback[user_id]
-            
-        logger.info(f"Recorded feedback from user {user_id}: {rating}/5")
+             self.pending_feedback[user_id].cancel()
+             del self.pending_feedback[user_id]
+             
+        logger.info("Recorded feedback from user %s: %s★", user_id, rating)
+        return row
         
     def is_feedback_pending(self, user_id):
         """

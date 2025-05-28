@@ -1,50 +1,76 @@
-from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from __future__ import annotations
 
-class TeamsFrom(BaseModel):
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+# ───────── auxiliary sub-models ────────────────────────────────────────────
+
+class TeamsUser(BaseModel):
+    """The `from` object in a Teams activity."""
     id: str
     name: Optional[str] = None
     aad_object_id: Optional[str] = Field(None, alias="aadObjectId")
     job_title: Optional[str] = Field(None, alias="jobTitle")
     display_name: Optional[str] = Field(None, alias="displayName")
-    email: Optional[str] = Field(None, alias="email")
-    
-    class Config:
-        allow_population_by_field_name = True
-        allow_population_by_alias      = True
+    email: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
 
 class TeamsConversation(BaseModel):
     id: str
     name: Optional[str] = None
 
+
 class TeamsRecipient(BaseModel):
     id: str
     name: Optional[str] = None
 
+
+# ───────── main request/response models ────────────────────────────────────
+
 class TeamsMessageRequest(BaseModel):
-    """Model for incoming Teams messages."""
-    type: str = "message"
-    id: Optional[str] = None
-    timestamp: Optional[str] = None
-    serviceUrl: str
-    channelId: str = "msteams"
-    from_: TeamsFrom = Field(..., alias="from")
-    conversation: Dict[str, Any]
-    recipient: Optional[TeamsRecipient] = None
-    text: Optional[str] = None
-    entities: Optional[list] = None
-    attachments: Optional[list] = None
-    value: Optional[Dict[str, Any]] = None
-    
-    class Config:
-        populate_by_name = True
+    """
+    Incoming Bot Framework activity as sent by Microsoft Teams.
+
+    Only the fields our bot actually uses are included; the rest are ignored
+    thanks to `extra="ignore"`.
+    """
+    type: Literal["message"] = "message"
+    activity_id: Optional[str] = Field(None, alias="id")
+    timestamp: Optional[datetime] = None
+    service_url: str = Field(..., alias="serviceUrl")
         
+    channel_id: Literal["msteams"] = Field("msteams", alias="channelId")
+    from_: TeamsUser = Field(..., alias="from")
+    conversation: TeamsConversation
+    recipient: Optional[TeamsRecipient] = None
+
+    text: Optional[str] = None
+    entities: Optional[List[Dict[str, Any]]] = None
+    attachments: Optional[List[Dict[str, Any]]] = None
+
+    # If this activity is a reply, Teams gives the parent id in camelCase
+    reply_to_id: Optional[str] = Field(None, alias="replyToId")
+
+    # Adaptive-card submit payloads land in `value`
+    value: Optional[Dict[str, Any]] = None
+
+
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
 class TeamsActivityResponse(BaseModel):
-    """Model for outgoing Teams responses."""
+    """Outgoing bot activity (we usually set only `type` and `text`)."""
     type: str = "message"
     text: str
+
 
 class FeedbackRequest(BaseModel):
     user_id: str
     rating: int
-    suggestion: Optional[str] = "" 
+    suggestion: Optional[str] = ""

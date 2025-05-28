@@ -1,7 +1,8 @@
 import logging
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ def _ensure_feedback_file():
         with open(FEEDBACK_FILE, "w") as f:
             json.dump([], f)
 
-def save_feedback(user_id, rating, comment=""):
+def save_feedback(user_id, session_id, rating, comment="", ):
     """Save user feedback to the JSON file.
     
     Args:
@@ -35,10 +36,15 @@ def save_feedback(user_id, rating, comment=""):
         
         # Add new feedback
         feedback_data.append({
+            "id": uuid.uuid4(),
+            "bot_name": "hrbot",
+            "env": "production",
+            "channel": "teams",
             "user_id": user_id,
-            "rating": rating,
-            "comment": comment,
-            "timestamp": datetime.now().isoformat()
+            "session_id": session_id,
+            "rate": rating,
+            "feedback_comment": comment,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
         
         # Write back to file

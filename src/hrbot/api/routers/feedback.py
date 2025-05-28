@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 import logging
+from hrbot.services import storage_service
 from hrbot.services.feedback_service import FeedbackService
 from hrbot.services.feedback import save_feedback
 from hrbot.config.settings import settings
@@ -14,25 +15,43 @@ router = APIRouter()
 feedback_service = FeedbackService()
 teams_adapter = TeamsAdapter()
 
-class FeedbackRequest(BaseModel):
+class EnhancedFeedbackRequest(BaseModel):
     user_id: str
     rating: int
     comment: Optional[str] = None
     conversation_id: Optional[str] = None
     service_url: Optional[str] = None
+    user_name: Optional[str] = None
+    job_title: Optional[str] = None
+    session_duration: Optional[int] = None
+    message_count: Optional[int] = None
 
 @router.post("/")
-async def submit_feedback(feedback: FeedbackRequest, background_tasks: BackgroundTasks):
-    """Submit user feedback on the HR bot."""
+async def submit_enhanced_feedback(
+    feedback: EnhancedFeedbackRequest, 
+    background_tasks: BackgroundTasks
+):
+    """Submit enhanced feedback with detailed context."""
     try:
-        logger.info(f"Received feedback from user {feedback.user_id}: {feedback.rating}/5")
+        logger.info(f"Received enhanced feedback from user {feedback.user_id}: {feedback.rating}/5")
         
-        # Save the feedback
-        save_feedback(feedback.user_id, feedback.rating, feedback.comment or "")
+        # Save feedback with full context
+        success = await feedback_service.record_feedback(
+            user_id=feedback.user_id,
+            rating=feedback.rating,
+            comment=feedback.comment or "",
+            conversation_id=feedback.conversation_id,
+            user_name=feedback.user_name,
+            job_title=feedback.job_title,
+            session_duration=feedback.session_duration,
+            message_count=feedback.message_count
+        )
         
-        # If service_url and conversation_id are provided, send a thank you message
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save feedback")
+        
+        # Send thank you message if Teams context provided
         if feedback.service_url and feedback.conversation_id:
-            # Customize the thank you message based on rating
             if feedback.rating >= 4:
                 message = "Thank you for your positive feedback! We're glad to hear you had a good experience."
             elif feedback.rating == 3:
@@ -40,7 +59,6 @@ async def submit_feedback(feedback: FeedbackRequest, background_tasks: Backgroun
             else:
                 message = "Thank you for your feedback. We're sorry your experience wasn't better, and we'll work to improve."
                 
-            # Send the message in the background
             background_tasks.add_task(
                 teams_adapter.send_message,
                 feedback.service_url,
@@ -48,30 +66,34 @@ async def submit_feedback(feedback: FeedbackRequest, background_tasks: Backgroun
                 message
             )
         
-        return {"status": "success", "message": "Feedback recorded"}
+        return {"status": "success", "message": "Enhanced feedback recorded"}
+        
     except Exception as e:
-        logger.error(f"Error processing feedback: {str(e)}")
+        logger.error(f"Error processing enhanced feedback: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process feedback: {str(e)}")
 
-@router.get("/statistics")
-async def get_feedback_stats(request: Request):
-    """Get feedback statistics (requires admin token)"""
+@router.get("/statistics/enhanced")
+async def get_enhanced_feedback_stats(
+    request: Request,
+    days: int = 30
+):
+    """Get enhanced feedback statistics with detailed analytics."""
     # Simple auth check
     auth_header = request.headers.get("Authorization")
     if not auth_header or auth_header != f"Bearer {settings.feedback.admin_token}":
         raise HTTPException(status_code=401, detail="Unauthorized")
     
     try:
-        # Placeholder for actual statistics
-        # In a real implementation, this would query a database
+        stats = await storage_service.get_feedback_stats(days)
         return {
-            "total_feedback": 0,
-            "average_rating": 0,
-            "feedback_count_by_rating": {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+            "status": "success",
+            "period_days": days,
+            **stats
         }
     except Exception as e:
-        logger.error(f"Error getting feedback statistics: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get feedback statistics: {str(e)}")
+        logger.error(f"Error getting enhanced feedback statistics: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
+
 
 @router.post("/card-action")
 async def handle_card_action(request: Request):
@@ -192,3 +214,6 @@ async def handle_card_action(request: Request):
     except Exception as e:
         logger.error(f"Error processing card action: {str(e)}")
         return {"status": "error", "message": str(e)} 
+    
+
+
