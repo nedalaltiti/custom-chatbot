@@ -60,7 +60,27 @@ class ChatProcessor:
         Returns:
             Result containing the LLM response or error
         """
-        # Check if we should use RAG for this query
+        # Check if this is an HR-related query first
+        hr_keywords = ['leave', 'sick', 'vacation', 'policy', 'benefit', 'insurance', 'hr', 
+                       'payroll', 'employee', 'work', 'office', 'attendance', 'probation',
+                       'resignation', 'discount', 'medical', 'doctor', 'workstation', 'overtime',
+                       'zenhr', 'manager', 'half day', 'half-day', 'team', 'company']
+        
+        user_message_lower = user_message.lower()
+        is_hr_query = any(keyword in user_message_lower for keyword in hr_keywords)
+        
+        # If it's clearly not an HR query, redirect immediately to prevent hallucination
+        if not is_hr_query:
+            return Success({
+                "response": (
+                    "I'm an HR Assistant and can only help with HR-related topics and attach the HR Support link (https://hrsupport.usclarity.com/support/home) to the response.\n\n"
+                    "Is there anything else I can help you with?"
+                ),
+                "used_rag": False,
+                "user_id": user_id,
+            })
+        
+        # For HR queries, check if we should use RAG
         if self.rag.should_use_rag(user_message, chat_history):
             rag_result = await self.rag.query(
                 user_message,
@@ -79,71 +99,34 @@ class ChatProcessor:
                 # If RAG found sources, return the result
                 if payload.get("sources"):
                     return rag_result
-                # If no sources found but response generated, use it
+                # If no sources found but response generated and it's not a "no info" response
                 if formatted_response and "No relevant information found" not in formatted_response:
                     return rag_result
             
-            # If RAG failed or found nothing, log it but continue to fallback
-            logger.info("RAG didn't find relevant documents for query: %s", user_message)
-        
-        # For general queries or when RAG doesn't find documents, use direct LLM
-        # This allows the bot to have natural conversations about non-HR topics
-        logger.info("Using direct LLM for query: %s", user_message)
-        
-        # Check if this is an HR-related query
-        hr_keywords = ['leave', 'sick', 'vacation', 'policy', 'benefit', 'insurance', 'hr', 
-                       'payroll', 'employee', 'work', 'office', 'attendance', 'probation',
-                       'resignation', 'discount', 'medical', 'doctor', 'workstation']
-        
-        user_message_lower = user_message.lower()
-        is_hr_query = any(keyword in user_message_lower for keyword in hr_keywords)
-        
-        # If it's clearly not an HR query, politely redirect
-        if not is_hr_query and len(user_message.split()) > 2:
+            # If RAG didn't find relevant documents for HR query, 
+            # don't fallback to direct LLM to avoid hallucination
+            logger.info("RAG didn't find relevant documents for HR query, returning knowledge base message: %s", user_message)
             return Success({
                 "response": (
-                    "I'm an HR Assistant and can only help with HR-related topics such as:\n\n"
-                    "• Leave and vacation policies\n"
-                    "• Medical insurance and benefits\n"
-                    "• Workplace policies\n"
-                    "• Employee resources\n\n"
+                    "I don't have specific information about that in my knowledge base. "
+                    "For detailed information about this topic, please contact the HR department.\n\n"
+                    "Open an HR support ticket ➜ https://hrsupport.usclarity.com/support/home\n\n"
                     "Is there anything else I can help you with?"
                 ),
-                "used_rag": False,
+                "used_rag": True,
                 "user_id": user_id,
             })
         
-        # Build conversation context
-        messages = []
-        if chat_history:
-            messages.extend(chat_history)
-        messages.append(user_message)
-        
-        # Add system context if provided
-        if system_override:
-            messages.insert(0, f"System: {system_override}")
-        
-        # Get response from LLM
-        llm_result = await self.llm_service.analyze_messages(messages)
-        
-        if llm_result.is_success():
-            response_data = llm_result.unwrap()
-            raw_response = response_data.get("response", "")
-            formatted_response = self._format_bullet_points(raw_response)
-            return Success({
-                "response": formatted_response or "I'm having trouble understanding. Could you please rephrase?",
-                "used_rag": False,
-                "user_id": user_id,
-            })
-        
-        # Only if everything fails, return the generic response
+        # If HR query but RAG not triggered, still avoid direct LLM
+        logger.info("HR query but RAG not triggered, returning knowledge base message: %s", user_message)
         return Success({
             "response": (
-                "I'm having trouble processing your request. "
-                "For specific HR inquiries, please contact the HR department.\n\n"
-                "Open a support ticket ➜ https://hrsupport.usclarity.com/support/home"
+                "I don't have specific information about that in my knowledge base. "
+                "For detailed information about this topic, please contact the HR department.\n\n"
+                "Open an HR support ticket ➜ https://hrsupport.usclarity.com/support/home\n\n"
+                "Is there anything else I can help you with?"
             ),
-            "used_rag": False,
+            "used_rag": True,
             "user_id": user_id,
         })
         
@@ -226,6 +209,24 @@ class ChatProcessor:
         Yields:
             Chunks of the response as they are generated
         """
+        # Check if this is an HR-related query first
+        hr_keywords = ['leave', 'sick', 'vacation', 'policy', 'benefit', 'insurance', 'hr', 
+                       'payroll', 'employee', 'work', 'office', 'attendance', 'probation',
+                       'resignation', 'discount', 'medical', 'doctor', 'workstation', 'overtime',
+                       'zenhr', 'manager', 'half day', 'half-day', 'team', 'company']
+        
+        user_message_lower = user_message.lower()
+        is_hr_query = any(keyword in user_message_lower for keyword in hr_keywords)
+        
+        # If it's clearly not an HR query, redirect immediately to prevent hallucination
+        if not is_hr_query:
+            response = (
+                "I'm an HR Assistant and can only help with HR-related topics and attach the HR Support link (https://hrsupport.usclarity.com/support/home) to the response.\n\n"
+                "Is there anything else I can help you with?"
+            )
+            yield response
+            return
+        
         if self.rag.should_use_rag(user_message, chat_history):
             # Try RAG first
             has_content = False
@@ -239,9 +240,24 @@ class ChatProcessor:
             # If RAG yielded content, we're done
             if has_content:
                 return
+            
+            # If RAG didn't yield content for HR query, 
+            # don't fallback to direct LLM to avoid hallucination
+            logger.info("RAG didn't find relevant documents for HR query in streaming, returning knowledge base message: %s", user_message)
+            response = (
+                "I don't have specific information about that in my knowledge base. "
+                "For detailed information about this topic, please contact the HR department.\n\n"
+                "Open an HR support ticket ➜ https://hrsupport.usclarity.com/support/home\n\n"
+                "Is there anything else I can help you with?"
+            )
+            yield response
+            return
         
-        # Fall back to direct LLM streaming
-        messages = [] if not chat_history else list(chat_history)
-        messages.append(user_message)
-        async for chunk in self.llm_service.analyze_messages_streaming(messages):
-            yield chunk 
+        # If HR query but RAG not triggered, still avoid direct LLM
+        response = (
+            "I don't have specific information about that in my knowledge base. "
+            "For detailed information about this topic, please contact the HR department.\n\n"
+            "Open an HR support ticket ➜ https://hrsupport.usclarity.com/support/home\n\n"
+            "Is there anything else I can help you with?"
+        )
+        yield response 

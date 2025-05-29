@@ -38,7 +38,7 @@ class RetrievedChunk:
 
 
 class RAG:
-    """A lean Retrieval‑Augmented Generation pipeline."""
+    """A lean Retrieval‑Augmented Generation pipeline."""
 
     # keyword heuristics that trigger RAG even for short queries
     KNOWLEDGE_PATTERNS: Tuple[str, ...] = (
@@ -62,6 +62,14 @@ class RAG:
         r"\bmedical\b",
         r"\bworkstation\b",
         r"\bpayroll\b",
+        r"\bovertime\b",
+        r"\bzenhr\b",
+        r"\bhr\b",
+        r"\binsurance\b",
+        r"\bhalf.?day\b",
+        r"\bleave request\b",
+        r"\bmanager\b",
+        r"\bemployee\b",
     )
 
     def __init__(
