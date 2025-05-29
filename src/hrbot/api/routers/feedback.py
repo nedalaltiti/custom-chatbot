@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 import logging
-from hrbot.services import storage_service
 from hrbot.services.feedback_service import FeedbackService
 from hrbot.services.feedback import save_feedback
 from hrbot.config.settings import settings
@@ -71,29 +70,6 @@ async def submit_enhanced_feedback(
     except Exception as e:
         logger.error(f"Error processing enhanced feedback: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process feedback: {str(e)}")
-
-@router.get("/statistics/enhanced")
-async def get_enhanced_feedback_stats(
-    request: Request,
-    days: int = 30
-):
-    """Get enhanced feedback statistics with detailed analytics."""
-    # Simple auth check
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or auth_header != f"Bearer {settings.feedback.admin_token}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    
-    try:
-        stats = await storage_service.get_feedback_stats(days)
-        return {
-            "status": "success",
-            "period_days": days,
-            **stats
-        }
-    except Exception as e:
-        logger.error(f"Error getting enhanced feedback statistics: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
-
 
 @router.post("/card-action")
 async def handle_card_action(request: Request):

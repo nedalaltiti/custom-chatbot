@@ -47,10 +47,21 @@ class RAG:
         r"\btime\s+off\b",
         r"\bPTO\b",
         r"\bvacation\b",
+        r"\bleaves?\b",
         r"\b401k\b",
         r"\bhealth\s+insurance\b",
         r"\bonboarding\b",
         r"\bcompensation\b",
+        r"\bresign", 
+        r"\bquit\b",
+        r"\bleaving\b",
+        r"\bnotice\b",
+        r"\boff-?boarding\b",
+        r"\bsick\b",
+        r"\bdoctor\b",
+        r"\bmedical\b",
+        r"\bworkstation\b",
+        r"\bpayroll\b",
     )
 
     def __init__(

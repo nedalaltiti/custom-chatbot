@@ -26,6 +26,7 @@ from vertexai.preview.generative_models import GenerativeModel
 from hrbot.utils.result import Result, Success, Error
 from hrbot.utils.error import LLMError, ErrorCode
 from hrbot.config.settings import settings
+from hrbot.config.environment import get_env_var_bool
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,14 @@ class GeminiService:
 
         self._model = None  # lazy
         self.use_vertex = False
+
+        # Option to initialize eagerly
+        if get_env_var_bool("GEMINI_EAGER_INIT", False):
+            try:
+                self._ensure_model()
+                logger.info("Gemini model eagerly initialized")
+            except Exception as e:
+                logger.warning(f"Failed to eagerly initialize Gemini: {e}")
 
     def _get_api_key(self) -> str:
         """

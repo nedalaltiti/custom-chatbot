@@ -125,6 +125,7 @@ class FeedbackSettings:
             admin_token=get_env_var("ADMIN_TOKEN", cls.admin_token),
             feedback_timeout_minutes=get_env_var_int("FEEDBACK_TIMEOUT_MINUTES", cls.feedback_timeout_minutes),
         )
+
 @dataclass(frozen=True)
 class HRSupportSettings:
     url: str = "https://hrsupport.usclarity.com/support/home"
@@ -135,6 +136,31 @@ class HRSupportSettings:
         return cls(
             url=get_env_var("HR_SUPPORT_URL", cls.url),
             domain=get_env_var("HR_SUPPORT_DOMAIN", cls.domain),
+        )
+
+@dataclass(frozen=True)
+class PerformanceSettings:
+    """Performance optimization settings for Microsoft Teams streaming"""
+    use_intent_classification: bool = False  # Skip Gemini-based intent classification
+    cache_embeddings: bool = True
+    cache_ttl_seconds: int = 3600
+    min_streaming_length: int = 200  # Lowered from 400 to enable streaming for more responses
+    show_acknowledgment_threshold: int = 10  # Show "looking into it" for queries > 10 words
+    enable_streaming: bool = True  # Enable/disable streaming responses
+    streaming_delay: float = 1.2  # Delay between chunks (Microsoft requires 1+ seconds)
+    max_chunk_size: int = 150  # Maximum characters per chunk for optimal readability
+    
+    @classmethod
+    def from_environment(cls) -> "PerformanceSettings":
+        return cls(
+            use_intent_classification=get_env_var_bool("USE_INTENT_CLASSIFICATION", cls.use_intent_classification),
+            cache_embeddings=get_env_var_bool("CACHE_EMBEDDINGS", cls.cache_embeddings),
+            cache_ttl_seconds=get_env_var_int("CACHE_TTL_SECONDS", cls.cache_ttl_seconds),
+            min_streaming_length=get_env_var_int("MIN_STREAMING_LENGTH", cls.min_streaming_length),
+            show_acknowledgment_threshold=get_env_var_int("SHOW_ACK_THRESHOLD", cls.show_acknowledgment_threshold),
+            enable_streaming=get_env_var_bool("ENABLE_STREAMING", cls.enable_streaming),
+            streaming_delay=get_env_var_float("STREAMING_DELAY", cls.streaming_delay),
+            max_chunk_size=get_env_var_int("MAX_CHUNK_SIZE", cls.max_chunk_size),
         )
 
 @dataclass(frozen=True)
@@ -151,6 +177,7 @@ class AppSettings:
     google_cloud: GoogleCloudSettings = field(default_factory=GoogleCloudSettings.from_environment)
     feedback: FeedbackSettings = field(default_factory=FeedbackSettings.from_environment)
     hr_support: HRSupportSettings = field(default_factory=HRSupportSettings.from_environment)
+    performance: PerformanceSettings = field(default_factory=PerformanceSettings.from_environment)
     session_idle_minutes: int = 30
 
     @classmethod
@@ -170,7 +197,7 @@ class AppSettings:
         
 try:
     settings = AppSettings.from_environment()
-    logger.info(f"Config loaded for env='{settings.from_environment}'")
+    logger.info(f"Config loaded for env='{settings.app_name}'")
 except Exception as exc: 
     logger.critical("‼️  Failed to load configuration – exiting", exc_info=exc)
     raise
