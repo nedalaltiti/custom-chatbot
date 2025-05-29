@@ -57,13 +57,9 @@ def _list_item(emoji: str, text: str) -> dict:
     }
 
 # def create_welcome_card(user_name: str = "there") -> dict:
-def create_welcome_card(user_name: str = "there", job_title: str = "") -> dict:
+def create_welcome_card(user_name: str = "there") -> dict:
     """Elegant, theme-aware welcome card with simplified greeting."""
-    # header_text = f"Hi {user_name}" + (f" – {job_title}" if job_title else "") + "!"
     header = f"Hi {user_name}"
-    if job_title:
-        header += f" – {job_title}"
-    header += "!"
 
     return {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",

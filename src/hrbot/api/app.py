@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+import asyncio
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +22,8 @@ from hrbot.utils.di import get_vector_store
 from hrbot.infrastructure.ingest import refresh_vector_index 
 from hrbot.utils.error import BaseError, ErrorSeverity
 from hrbot.services.session_tracker import SessionTracker   
+from hrbot.services.gemini_service import GeminiService
+from hrbot.infrastructure.embeddings import VertexDirectEmbeddings
 
 logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
@@ -37,18 +40,40 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
     # Warm-up heavyweight services so the first request is brisk
     vector_store = get_vector_store()
-    await vector_store.warmup()           # no-op if your store doesn’t need it
+    await vector_store.warmup()           # no-op if your store doesn't need it
 
     # If no embeddings OR there are new files, build them now
     new_docs = await refresh_vector_index(vector_store)
     if new_docs:
         logger.info("Indexed %d fresh document(s) on startup", new_docs)
 
+    # Initialize LLM service in background to reduce first-request latency
+    asyncio.create_task(_warmup_services())
+
     logger.info("✅  Startup complete")
     try:
         yield
     finally:
         logger.info("👋  Goodbye")
+
+
+async def _warmup_services():
+    """Warm up LLM and embedding services in the background."""
+    try:
+        # Initialize Gemini
+        logger.info("Warming up Gemini service...")
+        gemini = GeminiService()
+        await gemini.test_connection()
+        
+        # Initialize embeddings
+        logger.info("Warming up embeddings service...")
+        embeddings = VertexDirectEmbeddings()
+        # Force initialization by embedding a test string
+        await asyncio.to_thread(embeddings.embed_query, "warmup")
+        
+        logger.info("Service warmup complete")
+    except Exception as e:
+        logger.warning(f"Service warmup failed (non-critical): {e}")
 
 
 app = FastAPI(
@@ -60,7 +85,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-if settings.cors_origins:   # don’t enable CORS unless explicitly configured
+if settings.cors_origins:   # don't enable CORS unless explicitly configured
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

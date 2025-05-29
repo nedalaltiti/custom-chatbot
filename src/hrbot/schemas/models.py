@@ -39,12 +39,13 @@ class TeamsMessageRequest(BaseModel):
     Only the fields our bot actually uses are included; the rest are ignored
     thanks to `extra="ignore"`.
     """
-    type: Literal["message"] = "message"
+    type: str = "message"  # Can be "message", "invoke", etc.
     activity_id: Optional[str] = Field(None, alias="id")
     timestamp: Optional[datetime] = None
     service_url: str = Field(..., alias="serviceUrl")
+    name: Optional[str] = None  # For invoke activities like "message/submitAction"
         
-    channel_id: Literal["msteams"] = Field("msteams", alias="channelId")
+    channel_id: str = Field("msteams", alias="channelId")  # Removed Literal restriction
     from_: TeamsUser = Field(..., alias="from")
     conversation: TeamsConversation
     recipient: Optional[TeamsRecipient] = None
@@ -58,8 +59,6 @@ class TeamsMessageRequest(BaseModel):
 
     # Adaptive-card submit payloads land in `value`
     value: Optional[Dict[str, Any]] = None
-
-
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 

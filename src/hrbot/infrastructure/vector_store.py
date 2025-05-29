@@ -7,20 +7,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import pickle
+import time
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Sequence, Dict, Tuple
 
 import numpy as np
 
 from hrbot.core.document import Document
 from hrbot.infrastructure.embeddings import VertexDirectEmbeddings
-from hrbot.utils.error import StorageError, ErrorCode   
+from hrbot.utils.error import StorageError, ErrorCode
+from hrbot.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    """Minimal but solid disk-backed cosine-similarity store."""
+    """Minimal but solid disk-backed cosine-similarity store with caching."""
 
     FILE_EXT = ".npz"          # single compressed archive <collection>.npz
 
@@ -43,6 +45,11 @@ class VectorStore:
         self.embeddings_model = self._embeddings
         self._matrix: np.ndarray | None = None       # shape (N, dim)
         self._docs: list[Document] = []
+        
+        # Simple cache for similarity searches
+        self._cache: Dict[Tuple[str, int], Tuple[List[Document], float]] = {}
+        self._cache_enabled = settings.performance.cache_embeddings
+        self._cache_ttl = settings.performance.cache_ttl_seconds
 
         self._load_or_init()
 
@@ -83,6 +90,9 @@ class VectorStore:
 
         with open(self._doclist_path, "wb") as f:
             pickle.dump(self._docs, f)
+            
+        # Clear cache when store is updated
+        self._cache.clear()
 
 
     async def add_documents(self, docs: Sequence[Document]) -> int:
@@ -134,6 +144,17 @@ class VectorStore:
 
         if top_k is not None:
             k = top_k
+            
+        # Check cache first
+        cache_key = (query, k)
+        if self._cache_enabled and cache_key in self._cache:
+            cached_result, timestamp = self._cache[cache_key]
+            if time.time() - timestamp < self._cache_ttl:
+                logger.debug(f"Cache hit for query: {query[:50]}...")
+                return cached_result
+            else:
+                # Remove expired entry
+                del self._cache[cache_key]
 
         q = await asyncio.to_thread(self._embeddings.embed_query, query)
         q = np.asarray(q, dtype=np.float32)
@@ -141,7 +162,22 @@ class VectorStore:
 
         sims = self._matrix @ q
         top_idx = np.argsort(sims)[-k:][::-1]
-        return [self._docs[i] for i in top_idx]
+        results = [self._docs[i] for i in top_idx]
+        
+        # Cache the results
+        if self._cache_enabled:
+            self._cache[cache_key] = (results, time.time())
+            # Clean up old cache entries if cache is getting large
+            if len(self._cache) > 100:
+                current_time = time.time()
+                expired_keys = [
+                    key for key, (_, timestamp) in self._cache.items()
+                    if current_time - timestamp >= self._cache_ttl
+                ]
+                for key in expired_keys:
+                    del self._cache[key]
+        
+        return results
 
     async def warmup(self) -> None:
         """Load data into RAM (called from FastAPI lifespan)."""
@@ -152,4 +188,9 @@ class VectorStore:
         """Danger: wipe cache from disk & memory."""
         for p in (self._archive_path, self._doclist_path):
             p.unlink(missing_ok=True)
+        self._cache.clear()
         self._load_or_init()
+        
+    async def delete_collection(self) -> None:
+        """Delete the entire collection."""
+        await self.clear()
