@@ -68,6 +68,36 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     service_url  = req.service_url
     conv_id      = req.conversation.id
     
+    # Send immediate typing indicator for user feedback
+    if not req.value and user_message.strip():
+        try:
+            await adapter.send_typing(service_url, conv_id)
+        except Exception as e:
+            logger.warning(f"Failed to send typing indicator: {e}")
+    
+    state = user_states.get(user_id)
+    if state is None:                        # first ever message from this user
+        state = {
+            "awaiting_more_help": False,     # Waiting for yes/no to "anything else?"
+            "awaiting_feedback":  False,
+            "feedback_shown":     False,
+            "use_streaming":      True,
+            "session_id":         session_tracker.get(user_id),   
+        }
+        user_states[user_id] = state          
+        first_time_users.add(user_id)
+    session_id = state["session_id"]
+    
+    # Get job title for system override
+    try:
+        profile   = await adapter.get_user_profile(aad_object_id)
+        job_title = profile.get("jobTitle", "Unknown")
+    except Exception:
+        job_title = "Unknown"
+
+    # Add job title to system context
+    system_override = f"Current user job title: {job_title}"
+
     # Handle ALL invoke requests to prevent "Unable to reach app" errors
     if req.type == 'invoke':
         try:
@@ -172,37 +202,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         except Exception as e:
             logger.error(f"Error in legacy invoke handling: {e}")
             return TeamsActivityResponse(text="")
-    
-    # Send immediate typing indicator for user feedback
-    if not req.value and user_message.strip():
-        try:
-            await adapter.send_typing(service_url, conv_id)
-        except Exception as e:
-            logger.warning(f"Failed to send typing indicator: {e}")
-    
-    state = user_states.get(user_id)
-    if state is None:                        # first ever message from this user
-        state = {
-            "awaiting_more_help": False,     # Waiting for yes/no to "anything else?"
-            "awaiting_feedback":  False,
-            "feedback_shown":     False,
-            "use_streaming":      True,
-            "session_id":         session_tracker.get(user_id),   
-        }
-        user_states[user_id] = state          
-        first_time_users.add(user_id)
-    session_id = state["session_id"]
-    
-    # Get job title for system override
-    try:
-        profile   = await adapter.get_user_profile(aad_object_id)
-        job_title = profile.get("jobTitle", "Unknown")
-    except Exception:
-        job_title = "Unknown"
-
-    # Add job title to system context
-    system_override = f"Current user job title: {job_title}"
-
     
     # ─── Handle card actions (feedback submissions, etc.) ───────────────────────
     if req.value:
