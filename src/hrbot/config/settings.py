@@ -15,7 +15,7 @@ class DatabaseSettings:
     password: str
     host: str
     port: int
-    sslmode: str = "require"
+    sslmode: str = "disable"
     pool_size: int = 5
     max_overflow: int = 10
     pool_timeout: int = 30
@@ -25,7 +25,7 @@ class DatabaseSettings:
     def url(self) -> str:
         """
         Assemble a SQLAlchemy URL using asyncpg.  
-        Example: postgresql+asyncpg://user:pass@host:5432/dbname?sslmode=require
+        Example: postgresql+asyncpg://user:pass@host:5432/dbname?sslmode=disable
         """
         creds = f"{self.user}:{self.password}" if self.password else self.user
         return (

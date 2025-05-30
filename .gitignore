@@ -173,4 +173,3 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 gemini-deployment-fe9ea6bb8c92.json
-data/
