@@ -5,10 +5,22 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.exc import SQLAlchemyError
 from hrbot.db.session import get_db_session_context
 from hrbot.db.models import Message, MessageReply
+from hrbot.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
 class MessageService:
+    def __init__(self):
+        """Initialize message service with optional database write disable."""
+        # Database writes are enabled by default
+        self.db_writes_enabled = True
+        
+        # Check for environment variable override
+        import os
+        if os.environ.get("DISABLE_DB_WRITES", "").lower() in ("true", "1", "yes"):
+            self.db_writes_enabled = False
+            logger.info("Database writes disabled via DISABLE_DB_WRITES environment variable")
+            
     async def add_message(
         self,
         *,
@@ -27,18 +39,31 @@ class MessageService:
         
         Returns the message ID immediately after insertion.
         """
+        # Check if database writes are disabled
+        if not self.db_writes_enabled:
+            logger.debug(f"Database write skipped (disabled): {role} message from {user_id}")
+            return 0  # Return dummy ID
+            
         stamp = datetime.utcnow()
 
         try:
             async with get_db_session_context() as session:
-                # Validate reply_to_id exists if provided
-                if reply_to_id and reply_to_id > 0:
-                    from sqlalchemy import select
-                    check_stmt = select(Message.id).where(Message.id == reply_to_id)
-                    result = await session.execute(check_stmt)
-                    if not result.scalar():
-                        logger.warning(f"Invalid reply_to_id {reply_to_id} - message doesn't exist")
-                        reply_to_id = None  # Don't create invalid relationship
+                # Validate reply_to_id exists if provided - handle string/int conversion
+                if reply_to_id:
+                    try:
+                        reply_to_id = int(reply_to_id)
+                        if reply_to_id > 0:
+                            from sqlalchemy import select
+                            check_stmt = select(Message.id).where(Message.id == reply_to_id)
+                            result = await session.execute(check_stmt)
+                            if not result.scalar():
+                                logger.warning(f"Invalid reply_to_id {reply_to_id} - message doesn't exist")
+                                reply_to_id = None  # Don't create invalid relationship
+                        else:
+                            reply_to_id = None
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid reply_to_id format: {reply_to_id}")
+                        reply_to_id = None
 
                 msg = Message(
                     bot_name=bot_name,

@@ -111,7 +111,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 EXPOSE 3978
 
 # Default command - can be overridden in docker-compose
-CMD ["python", "-m", "uvicorn", "src.hrbot.api.app:app", "--host", "0.0.0.0", "--port", "3978", "--workers", "1"]
+CMD ["python", "-m", "uvicorn", "hrbot.api.app:app", "--host", "0.0.0.0", "--port", "3978", "--workers", "1"]
 
 # Metadata labels following best practices
 LABEL maintainer="Nedal Al-titi <nedal.altiti@live.com>" \
