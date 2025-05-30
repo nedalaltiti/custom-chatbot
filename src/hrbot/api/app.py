@@ -123,6 +123,7 @@ app = FastAPI(
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 if settings.cors_origins:   # don't enable CORS unless explicitly configured
