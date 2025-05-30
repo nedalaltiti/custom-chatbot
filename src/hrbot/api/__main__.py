@@ -18,9 +18,9 @@ from hrbot.config.settings import settings
 def main() -> None:  
     """Boot Uvicorn with sane defaults taken from settings."""
     uvicorn.run(
-        "hrbot.api.app:app",          # dotted-path import
-        host=getattr(settings, "host", "0.0.0.0"),
-        port=getattr(settings, "port", 8000),
+        "hrbot.api.app:app",         
+        host=settings.host,  
+        port=settings.port, 
         reload=settings.debug,        # hot-reload in dev
         log_level="debug" if settings.debug else "info",
     )

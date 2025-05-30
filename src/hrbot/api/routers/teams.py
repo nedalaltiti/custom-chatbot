@@ -111,7 +111,7 @@ async def _ensure_user_message_saved(user_message: str, user_id: str, session_id
     return user_msg_id
 
 
-@router.post("/messages", response_model=TeamsActivityResponse)
+@router.post("/", response_model=TeamsActivityResponse)
 async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundTasks):
     user_message = req.text or ""
     user_id      = req.from_.id

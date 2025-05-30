@@ -135,8 +135,8 @@ if settings.cors_origins:   # don't enable CORS unless explicitly configured
     )
 
 app.include_router(health.router, prefix="/health", tags=["health"])
-# app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
-app.include_router(teams.router,  prefix="/api", tags=["teams"])
+app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
+# app.include_router(teams.router,  prefix="/api", tags=["teams"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(admin.router,  prefix="/admin", tags=["admin"])
 
