@@ -86,7 +86,7 @@ def get_database_credentials(
             "host": credentials.get("HOST"),
             "port": str(credentials.get("PORT", "5432")),
             "database": credentials.get("DATABASE_NAME"),
-            "schema": credentials.get("SCHEMA_NAME", "ai_chatbot"),
+            "schema": credentials.get("SCHEMA_NAME"),
             "sslmode": "disable"  # This database doesn't support SSL
         }
         

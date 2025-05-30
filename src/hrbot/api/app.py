@@ -11,6 +11,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 import asyncio
+import os
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,7 +50,11 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         await init_database()
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
-        raise
+        # Check if we should fail on DB errors
+        if os.environ.get("SKIP_DB_INIT", "").lower() not in ("true", "1", "yes"):
+            raise
+        else:
+            logger.warning("Continuing without database (SKIP_DB_INIT=true)")
 
     # Store temporary credentials path for cleanup
     if settings.gemini.use_aws_secrets and settings.gemini.credentials_path:
@@ -130,7 +135,8 @@ if settings.cors_origins:   # don't enable CORS unless explicitly configured
     )
 
 app.include_router(health.router, prefix="/health", tags=["health"])
-app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
+# app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
+app.include_router(teams.router,  prefix="/api", tags=["teams"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(admin.router,  prefix="/admin", tags=["admin"])
 
