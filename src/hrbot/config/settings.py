@@ -77,10 +77,10 @@ class DatabaseSettings:
         
         # Default: Use environment variables
         return cls(
-            name=get_env_var("DB_NAME", "nedal"),
-            user=get_env_var("DB_USER", "postgres"),
-            password=get_env_var("DB_PASSWORD", ""),
-            host=get_env_var("DB_HOST", "localhost"),
+            name=get_env_var("DB_NAME"),
+            user=get_env_var("DB_USER"),
+            password=get_env_var("DB_PASSWORD"),
+            host=get_env_var("DB_HOST"),
             port=get_env_var_int("DB_PORT", 5432),
             sslmode=get_env_var("DB_SSLMODE", "disable"),  # Only used when not leveraging AWS Secrets
             pool_size=get_env_var_int("DB_POOL_SIZE", 5),
@@ -189,7 +189,7 @@ class FeedbackSettings:
     @classmethod
     def from_environment(cls) -> "FeedbackSettings":
         return cls(
-            admin_token=get_env_var("ADMIN_TOKEN", cls.admin_token),
+            admin_token=get_env_var("ADMIN_TOKEN"),
             feedback_timeout_minutes=get_env_var_int("FEEDBACK_TIMEOUT_MINUTES", cls.feedback_timeout_minutes),
         )
 
