@@ -1,10 +1,4 @@
-# Multi-stage Dockerfile for HR Teams Bot
-# Built with security, performance, and production best practices
-
-# ================================
-# Build Stage
-# ================================
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 # Build arguments for flexibility
 ARG POETRY_VERSION=1.6.1
@@ -52,7 +46,7 @@ RUN poetry install --only-root
 # ================================
 # Runtime Stage
 # ================================
-FROM python:3.11-slim as runtime
+FROM python:3.11-slim AS runtime
 
 # Runtime arguments
 ARG APP_USER=hrbot
@@ -62,7 +56,7 @@ ARG APP_GID=1000
 # Set environment variables for runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH="/app/src:$PYTHONPATH" \
+    PYTHONPATH="/app/src" \
     PATH="/app/.venv/bin:$PATH" \
     APP_USER=${APP_USER}
 
@@ -74,6 +68,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     # Required for health checks
     curl \
+    # Required for Python urllib (health check)
+    python3-urllib3 \
     # Timezone data
     tzdata \
     # Clean up
@@ -103,9 +99,9 @@ RUN mkdir -p /app/data/{conversations,embeddings,knowledge} \
 # Switch to non-root user
 USER ${APP_USER}
 
-# Health check configuration
+# Health check configuration - using Python instead of curl for reliability
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:3978/health/ || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3978/health')" || exit 1
 
 # Expose port (Teams Bot standard port)
 EXPOSE 3978
@@ -121,4 +117,4 @@ LABEL maintainer="Nedal Al-titi <nedal.altiti@live.com>" \
       org.opencontainers.image.description="Enterprise HR Assistant with AI capabilities" \
       org.opencontainers.image.vendor="US Clarity" \
       org.opencontainers.image.licenses="Proprietary" \
-      org.opencontainers.image.source="https://github.com/your-org/custom-chatbot" 
+      org.opencontainers.image.source="https://github.com/your-org/custom-chatbot"
