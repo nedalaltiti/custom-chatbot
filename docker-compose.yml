@@ -1,0 +1,239 @@
+# Docker Compose for HR Teams Bot
+# Supports both development and production environments
+# Usage: 
+#   Development: docker-compose up
+#   Production: docker-compose --profile production up
+
+version: '3.8'
+
+# ================================
+# Networks
+# ================================
+networks:
+  hrbot-network:
+    driver: bridge
+    name: hrbot-network
+
+# ================================
+# Volumes
+# ================================
+volumes:
+  # Persistent data storage
+  hrbot-data:
+    name: hrbot-data
+  hrbot-logs:
+    name: hrbot-logs
+  hrbot-knowledge:
+    name: hrbot-knowledge
+  
+  # Development volumes
+  postgres-data:
+    name: hrbot-postgres-data
+  redis-data:
+    name: hrbot-redis-data
+  nginx-logs:
+    name: hrbot-nginx-logs
+
+# ================================
+# Services
+# ================================
+services:
+  
+  # ================================
+  # Main Application Service
+  # ================================
+  hrbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        POETRY_VERSION: 1.6.1
+        APP_USER: hrbot
+        APP_UID: 1000
+        APP_GID: 1000
+    
+    image: hrbot:latest
+    container_name: hrbot-app
+    
+    # Restart policy for production reliability
+    restart: unless-stopped
+    
+    # Port mapping
+    ports:
+      - "3978:3978"  # Teams Bot port
+    
+    # Environment variables
+    environment:
+      # Core app settings
+      - APP_NAME=${APP_NAME:-HR Teams Bot}
+      - DEBUG=${DEBUG:-false}
+      - HOST=0.0.0.0
+      - PORT=3978
+      
+      # AWS configuration for secrets
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - AWS_REGION=${AWS_REGION:-us-west-1}
+      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      
+      # Database configuration (fallback if not using AWS Secrets)
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_SSLMODE=${DB_SSLMODE:-require}
+      
+      # Database pool settings
+      - DB_POOL_SIZE=${DB_POOL_SIZE:-5}
+      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-10}
+      - DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT:-30}
+      - DB_POOL_RECYCLE=${DB_POOL_RECYCLE:-1800}
+      
+      # Teams Bot configuration
+      - MICROSOFT_APP_ID=${MICROSOFT_APP_ID}
+      - MICROSOFT_APP_PASSWORD=${MICROSOFT_APP_PASSWORD}
+      - TENANT_ID=${TENANT_ID}
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+      
+      # Google Cloud / Gemini settings
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-gemini-deployment}
+      - GOOGLE_CLOUD_LOCATION=${GOOGLE_CLOUD_LOCATION:-us-central1}
+      - GEMINI_MODEL_NAME=${GEMINI_MODEL_NAME:-gemini-2.0-flash-001}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.0}
+      - GEMINI_MAX_OUTPUT_TOKENS=${GEMINI_MAX_OUTPUT_TOKENS:-1024}
+      
+      # Performance settings
+      - USE_INTENT_CLASSIFICATION=${USE_INTENT_CLASSIFICATION:-false}
+      - CACHE_EMBEDDINGS=${CACHE_EMBEDDINGS:-true}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-3600}
+      - MIN_STREAMING_LENGTH=${MIN_STREAMING_LENGTH:-50}
+      - ENABLE_STREAMING=${ENABLE_STREAMING:-true}
+      - STREAMING_DELAY=${STREAMING_DELAY:-1.2}
+      
+      # Session and feedback settings
+      - SESSION_IDLE_MINUTES=${SESSION_IDLE_MINUTES:-30}
+      - FEEDBACK_TIMEOUT_MINUTES=${FEEDBACK_TIMEOUT_MINUTES:-10}
+      
+      # HR Support portal
+      - HR_SUPPORT_URL=${HR_SUPPORT_URL:-https://hrsupport.usclarity.com/support/home}
+      - HR_SUPPORT_DOMAIN=${HR_SUPPORT_DOMAIN:-hrsupport.usclarity.com}
+      
+      # CORS settings
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      
+      # Container-specific settings
+      - PYTHONPATH=/app/src
+    
+    # Volume mounts for persistent data
+    volumes:
+      - hrbot-data:/app/data
+      - hrbot-logs:/app/logs
+      - hrbot-knowledge:/app/data/knowledge
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3978/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Resource limits for production
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot,environment=production"
+    
+    # Network
+    networks:
+      - hrbot-network
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # User configuration (non-root)
+    user: "1000:1000"
+
+  # ================================
+  # Local PostgreSQL (Development Only)
+  # ================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: hrbot-postgres
+    profiles: ["development", "local"]  # Only runs in development
+    
+    restart: unless-stopped
+    
+    environment:
+      POSTGRES_DB: ${DB_NAME:-az_airbyte}
+      POSTGRES_USER: ${DB_USER:-chatbot_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-your_local_password}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    
+    ports:
+      - "5432:5432"
+    
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-chatbot_user} -d ${DB_NAME:-az_airbyte}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    
+    networks:
+      - hrbot-network
+    
+    # Security
+    security_opt:
+      - no-new-privileges:true
+
+
+  # ================================
+  # Nginx Reverse Proxy (Production)
+  # ================================
+  nginx:
+    image: nginx:alpine
+    container_name: hrbot-nginx
+    profiles: ["production"]  # Only in production
+    
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/ssl:/etc/ssl/certs:ro
+      - nginx-logs:/var/log/nginx
+    
+    depends_on:
+      - hrbot
+    
+    networks:
+      - hrbot-network
+    
+    security_opt:
+      - no-new-privileges:true 

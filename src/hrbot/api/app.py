@@ -33,10 +33,28 @@ logger = logging.getLogger("hrbot.app")
 
 session_tracker = SessionTracker(idle_minutes=settings.session_idle_minutes)
 
+# Store temporary credentials path for cleanup
+_temp_credentials_path = None
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     """Initialise expensive singletons once per process and dispose on exit."""
+    global _temp_credentials_path
+    
     logger.info("HR-bot starting up…")
+
+    # Initialize database connections first
+    try:
+        from hrbot.db.session import init_database
+        await init_database()
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        raise
+
+    # Store temporary credentials path for cleanup
+    if settings.gemini.use_aws_secrets and settings.gemini.credentials_path:
+        _temp_credentials_path = settings.gemini.credentials_path
+        logger.info("Using AWS Secrets Manager for Gemini credentials")
 
     # Warm-up heavyweight services so the first request is brisk
     vector_store = get_vector_store()
@@ -54,6 +72,23 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        logger.info("👋  Shutting down...")
+        
+        # Clean up temporary credentials if using AWS Secrets Manager
+        if _temp_credentials_path:
+            try:
+                from hrbot.utils.secret_manager import cleanup_temp_credentials
+                cleanup_temp_credentials(_temp_credentials_path)
+                logger.info("Cleaned up temporary AWS credentials")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup temporary credentials: {e}")
+        
+        # Clean up database connections
+        try:
+            from hrbot.db.session import close_database
+            await close_database()
+        except Exception as e:
+            logger.error(f"Database cleanup failed: {e}")
         logger.info("👋  Goodbye")
 
 
