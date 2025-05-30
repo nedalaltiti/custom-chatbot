@@ -62,7 +62,7 @@ class TeamsMessageRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-
+        
 class TeamsActivityResponse(BaseModel):
     """Outgoing bot activity (we usually set only `type` and `text`)."""
     type: str = "message"
@@ -72,4 +72,4 @@ class TeamsActivityResponse(BaseModel):
 class FeedbackRequest(BaseModel):
     user_id: str
     rating: int
-    suggestion: Optional[str] = ""
+    suggestion: Optional[str] = "" 

@@ -315,13 +315,16 @@ class _MicrosoftTeamsStreamer:
 
         # 2) Response streaming - accumulate and send chunks
         chunk_count = 0
+        last_chunk = ""
         async for chunk in gen:
             if not chunk.strip():  # Skip empty chunks
+                logger.debug(f"Skipping empty chunk at position {chunk_count}")
                 continue
                 
             # Build cumulative buffer (Microsoft requirement)
             # Always append chunks to build the complete message
             self.buffer += chunk
+            last_chunk = chunk
             chunk_count += 1
             
             # Send streaming update with cumulative content
@@ -330,6 +333,12 @@ class _MicrosoftTeamsStreamer:
                 return False
                 
             logger.debug(f"Sent streaming chunk {chunk_count}, sequence {self.seq-1}, buffer length: {len(self.buffer)}")
+            
+        # Log if we ended with no chunks or very few
+        if chunk_count == 0:
+            logger.warning("Streaming completed with 0 chunks - no content was generated")
+        elif chunk_count < 3:
+            logger.info(f"Short streaming session: only {chunk_count} chunks. Last chunk: '{last_chunk}'")
 
         # 3) Final message
         success = await self._finish()

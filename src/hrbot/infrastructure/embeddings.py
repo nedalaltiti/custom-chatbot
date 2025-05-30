@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import os
 from typing import List, Optional
 
 from google.cloud import aiplatform
@@ -47,9 +48,19 @@ class VertexDirectEmbeddings:
 
         delay = 1.0
         last_err: Exception | None = None
+        
+        # Debug credential availability
+        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or self.project
+        
+        logger.debug(f"Embeddings init: credentials_path={creds_path}, project={project_id}, location={self.location}")
+        
+        if not creds_path:
+            logger.warning("No GOOGLE_APPLICATION_CREDENTIALS found for embeddings - this may cause authentication issues")
+        
         for attempt in range(1, self.RETRIES + 1):
             try:
-                aiplatform.init(project=self.project, location=self.location)
+                aiplatform.init(project=project_id, location=self.location)
                 self._model = TextEmbeddingModel.from_pretrained(self.model_name)
                 # cheap single vector to discover true dimensionality
                 sample = self._model.get_embeddings(["ping"])[0].values

@@ -139,7 +139,10 @@ class VectorStore:
          top_k: int | None = None,      
 
      ) -> list[Document]:
+        logger.debug(f"Similarity search called with query: '{query[:50]}...', k={k}, docs available: {len(self._docs)}")
+        
         if self._matrix is None or not len(self._docs):
+            logger.warning(f"No documents available for search! Matrix: {self._matrix is not None}, Docs: {len(self._docs)}")
             return []
 
         if top_k is not None:
@@ -163,6 +166,12 @@ class VectorStore:
         sims = self._matrix @ q
         top_idx = np.argsort(sims)[-k:][::-1]
         results = [self._docs[i] for i in top_idx]
+        
+        # Debug logging
+        logger.debug(f"Similarity scores: {[sims[i] for i in top_idx[:5]]}")  # Top 5 scores
+        logger.debug(f"Retrieved {len(results)} documents for query: '{query[:30]}...'")
+        if results:
+            logger.debug(f"Top result: {results[0].page_content[:100]}...")
         
         # Cache the results
         if self._cache_enabled:
@@ -194,3 +203,242 @@ class VectorStore:
     async def delete_collection(self) -> None:
         """Delete the entire collection."""
         await self.clear()
+
+
+# Optional ChromaDB implementation for enhanced vector database capabilities
+try:
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+    
+    class ChromaVectorStore:
+        """
+        Enhanced vector store using ChromaDB for better performance and features.
+        
+        Advantages over basic VectorStore:
+        - Better scalability and performance
+        - Advanced filtering and metadata queries
+        - Built-in persistence and reliability
+        - Support for multiple collections
+        - Advanced similarity algorithms
+        """
+        
+        def __init__(
+            self,
+            *,
+            collection_name: str = "hr_documents",
+            data_dir: str | Path = "data/chroma",
+            embeddings: VertexDirectEmbeddings | None = None,
+        ) -> None:
+            self.collection_name = collection_name
+            self.data_dir = Path(data_dir)
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            
+            self._embeddings = embeddings or VertexDirectEmbeddings()
+            self.embeddings_model = self._embeddings
+            
+            # Initialize ChromaDB client
+            chroma_settings = ChromaSettings(
+                chroma_db_impl="duckdb+parquet",
+                persist_directory=str(self.data_dir),
+                anonymized_telemetry=False
+            )
+            
+            self._client = chromadb.Client(chroma_settings)
+            
+            # Get or create collection
+            try:
+                self._collection = self._client.get_collection(
+                    name=collection_name,
+                    embedding_function=None  # We'll handle embeddings ourselves
+                )
+                logger.info(f"Loaded existing ChromaDB collection: {collection_name}")
+            except ValueError:
+                self._collection = self._client.create_collection(
+                    name=collection_name,
+                    embedding_function=None
+                )
+                logger.info(f"Created new ChromaDB collection: {collection_name}")
+        
+        @property 
+        def documents(self) -> list[Document]:
+            """Get all documents from the collection."""
+            try:
+                result = self._collection.get()
+                docs = []
+                
+                if result['documents']:
+                    for i, doc_text in enumerate(result['documents']):
+                        metadata = result['metadatas'][i] if result['metadatas'] else {}
+                        docs.append(Document(page_content=doc_text, metadata=metadata))
+                
+                return docs
+            except Exception as e:
+                logger.warning(f"Error retrieving documents from ChromaDB: {e}")
+                return []
+        
+        async def add_documents(self, docs: Sequence[Document]) -> int:
+            """Add documents to ChromaDB with deduplication."""
+            if not docs:
+                return 0
+            
+            # Check for existing documents to avoid duplicates
+            existing_hashes = set()
+            try:
+                result = self._collection.get()
+                if result['metadatas']:
+                    existing_hashes = {
+                        meta.get('sha256') for meta in result['metadatas'] 
+                        if meta.get('sha256')
+                    }
+            except Exception as e:
+                logger.warning(f"Error checking existing documents: {e}")
+            
+            # Filter new documents
+            fresh_docs = []
+            for doc in docs:
+                doc_hash = doc.sha256()
+                if doc_hash not in existing_hashes:
+                    doc.metadata['sha256'] = doc_hash
+                    fresh_docs.append(doc)
+            
+            if not fresh_docs:
+                return 0
+            
+            # Generate embeddings
+            texts = [doc.page_content for doc in fresh_docs]
+            embeddings = await asyncio.to_thread(
+                self._embeddings.embed_documents, 
+                texts
+            )
+            
+            # Prepare data for ChromaDB
+            ids = [f"doc_{hash(doc.page_content)}_{i}" for i, doc in enumerate(fresh_docs)]
+            metadatas = [doc.metadata for doc in fresh_docs]
+            
+            # Add to collection
+            try:
+                self._collection.add(
+                    embeddings=embeddings,
+                    documents=texts,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+                
+                # Persist changes
+                self._client.persist()
+                
+                logger.info(f"Added {len(fresh_docs)} new documents to ChromaDB")
+                return len(fresh_docs)
+                
+            except Exception as e:
+                logger.error(f"Error adding documents to ChromaDB: {e}")
+                return 0
+        
+        async def similarity_search(
+            self,
+            query: str,
+            k: int = 5,
+            *,
+            top_k: int | None = None,
+            where: Dict | None = None  # Additional filtering
+        ) -> list[Document]:
+            """Search for similar documents using ChromaDB."""
+            if top_k is not None:
+                k = top_k
+            
+            try:
+                # Generate query embedding
+                query_embedding = await asyncio.to_thread(
+                    self._embeddings.embed_query, 
+                    query
+                )
+                
+                # Perform similarity search
+                results = self._collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=k,
+                    where=where,
+                    include=['documents', 'metadatas', 'distances']
+                )
+                
+                # Convert results to Document objects
+                documents = []
+                if results['documents'] and results['documents'][0]:
+                    for i, doc_text in enumerate(results['documents'][0]):
+                        metadata = results['metadatas'][0][i] if results['metadatas'][0] else {}
+                        
+                        # Add similarity score to metadata
+                        if results['distances'] and results['distances'][0]:
+                            # ChromaDB returns distances (lower is better), convert to similarity
+                            distance = results['distances'][0][i]
+                            similarity = 1 / (1 + distance)  # Convert distance to similarity
+                            metadata['similarity_score'] = similarity
+                        
+                        documents.append(Document(
+                            page_content=doc_text,
+                            metadata=metadata
+                        ))
+                
+                return documents
+                
+            except Exception as e:
+                logger.error(f"Error in ChromaDB similarity search: {e}")
+                return []
+        
+        async def warmup(self) -> None:
+            """Warmup ChromaDB collection."""
+            try:
+                # Test query to warm up the collection
+                await self.similarity_search("test", k=1)
+                logger.debug("ChromaDB warmed up successfully")
+            except Exception as e:
+                logger.warning(f"ChromaDB warmup failed: {e}")
+        
+        async def clear(self) -> None:
+            """Clear all documents from the collection."""
+            try:
+                self._client.delete_collection(self.collection_name)
+                self._collection = self._client.create_collection(
+                    name=self.collection_name,
+                    embedding_function=None
+                )
+                logger.info(f"Cleared ChromaDB collection: {self.collection_name}")
+            except Exception as e:
+                logger.error(f"Error clearing ChromaDB collection: {e}")
+        
+        async def delete_collection(self) -> None:
+            """Delete the entire collection."""
+            await self.clear()
+    
+    logger.info("ChromaDB available - enhanced vector store enabled")
+    
+except ImportError:
+    class ChromaVectorStore:
+        """Placeholder class when ChromaDB is not available."""
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "ChromaDB not installed. Install with: pip install chromadb\n"
+                "Or use the basic VectorStore implementation."
+            )
+    
+    logger.info("ChromaDB not available - using basic VectorStore only")
+
+
+def create_vector_store(
+    store_type: str = "basic",
+    **kwargs
+) -> VectorStore | ChromaVectorStore:
+    """
+    Factory function to create the appropriate vector store.
+    
+    Args:
+        store_type: "basic" for NumPy-based store, "chroma" for ChromaDB
+        **kwargs: Additional arguments for the vector store
+        
+    Returns:
+        Configured vector store instance
+    """
+    if store_type.lower() == "chroma":
+        return ChromaVectorStore(**kwargs)
+    else:
+        return VectorStore(**kwargs)
