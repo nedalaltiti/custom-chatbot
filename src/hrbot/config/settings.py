@@ -43,13 +43,46 @@ class DatabaseSettings:
     
     @classmethod
     def from_environment(cls) -> "DatabaseSettings":
+        # Prefer AWS Secrets Manager unless the caller explicitly disables it
+        use_aws_secrets = get_env_var_bool("USE_AWS_SECRETS", True)
+        
+        if use_aws_secrets:
+            try:
+                from hrbot.utils.secret_manager import get_database_credentials, get_aws_region
+                
+                # Get AWS configuration
+                region = get_aws_region()
+                secret_name = get_env_var("AWS_DB_SECRET_NAME", "chatbot-clarity-db-dev-postgres")
+                
+                logger.info(f"Loading database credentials from AWS Secrets Manager: {secret_name}")
+                db_creds = get_database_credentials(secret_name, region)
+                
+                return cls(
+                    name=db_creds["database"],
+                    user=db_creds["username"],
+                    password=db_creds["password"],
+                    host=db_creds["host"],
+                    port=int(db_creds["port"]),
+                    sslmode=db_creds.get("sslmode", "disable"),  # Default to disable if not present
+                    pool_size=get_env_var_int("DB_POOL_SIZE", 5),
+                    max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
+                    pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
+                    pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to load database credentials from AWS Secrets Manager: {e}")
+                logger.info("Falling back to environment variables for database configuration")
+                # Fall through to environment variable method
+        
+        # Default: Use environment variables
         return cls(
             name=get_env_var("DB_NAME", "nedal"),
             user=get_env_var("DB_USER", "postgres"),
             password=get_env_var("DB_PASSWORD", ""),
             host=get_env_var("DB_HOST", "localhost"),
             port=get_env_var_int("DB_PORT", 5432),
-            sslmode=get_env_var("DB_SSLMODE", "require"),
+            sslmode=get_env_var("DB_SSLMODE", "disable"),  # Only used when not leveraging AWS Secrets
             pool_size=get_env_var_int("DB_POOL_SIZE", 5),
             max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
             pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
@@ -62,14 +95,48 @@ class GeminiSettings:
     temperature: float = 0.0
     max_output_tokens: int = 1024
     api_key: Optional[str] = None  # Prefer explicit API key over default credentials
+    use_aws_secrets: bool = False
+    credentials_path: Optional[str] = None  # Path to temp credentials file
 
     @classmethod
     def from_environment(cls) -> "GeminiSettings":
+        # Prefer AWS Secrets Manager unless explicitly disabled
+        use_aws_secrets = get_env_var_bool("USE_AWS_SECRETS", True)
+        credentials_path = None
+        
+        if use_aws_secrets:
+            try:
+                from hrbot.utils.secret_manager import load_gemini_credentials, get_aws_region
+                
+                # Get AWS configuration
+                region = get_aws_region()
+                secret_name = get_env_var("AWS_GEMINI_SECRET_NAME", "genai-gemini-vertex-prod-api")
+                
+                logger.info(f"Loading Gemini credentials from AWS Secrets Manager: {secret_name}")
+                credentials_path = load_gemini_credentials(secret_name, region)
+                
+                return cls(
+                    model_name=get_env_var("GEMINI_MODEL_NAME", cls.model_name),
+                    temperature=get_env_var_float("GEMINI_TEMPERATURE", cls.temperature),
+                    max_output_tokens=get_env_var_int("GEMINI_MAX_OUTPUT_TOKENS", cls.max_output_tokens),
+                    api_key=None,  # Will use service account from AWS
+                    use_aws_secrets=True,
+                    credentials_path=credentials_path,
+                )
+                
+            except Exception as e:
+                logger.error(f"Failed to load Gemini credentials from AWS Secrets Manager: {e}")
+                logger.info("Falling back to environment variables for Gemini configuration")
+                # Fall through to environment variable method
+        
+        # Default: Use environment variables
         return cls(
             model_name=get_env_var("GEMINI_MODEL_NAME", cls.model_name),
             temperature=get_env_var_float("GEMINI_TEMPERATURE", cls.temperature),
             max_output_tokens=get_env_var_int("GEMINI_MAX_OUTPUT_TOKENS", cls.max_output_tokens),
             api_key=get_env_var("GOOGLE_API_KEY"),
+            use_aws_secrets=False,
+            credentials_path=None,
         )
 
 @dataclass(frozen=True)
@@ -139,6 +206,23 @@ class HRSupportSettings:
         )
 
 @dataclass(frozen=True)
+class AWSSettings:
+    """AWS-specific configuration settings."""
+    use_secrets_manager: bool = False
+    region: str = "us-west-1"
+    db_secret_name: str = "chatbot-clarity-db-dev-postgres"
+    gemini_secret_name: str = "genai-gemini-vertex-prod-api"
+    
+    @classmethod
+    def from_environment(cls) -> "AWSSettings":
+        return cls(
+            use_secrets_manager=get_env_var_bool("USE_AWS_SECRETS", cls.use_secrets_manager),
+            region=get_env_var("AWS_REGION", get_env_var("AWS_DEFAULT_REGION", cls.region)),
+            db_secret_name=get_env_var("AWS_DB_SECRET_NAME", cls.db_secret_name),
+            gemini_secret_name=get_env_var("AWS_GEMINI_SECRET_NAME", cls.gemini_secret_name),
+        )
+
+@dataclass(frozen=True)
 class PerformanceSettings:
     """Performance optimization settings for Microsoft Teams streaming"""
     use_intent_classification: bool = False  # Skip Gemini-based intent classification
@@ -149,6 +233,18 @@ class PerformanceSettings:
     enable_streaming: bool = True  # Enable/disable streaming responses
     streaming_delay: float = 1.2  # Delay between chunks (Microsoft requires 1+ seconds)
     max_chunk_size: int = 150  # Maximum characters per chunk for optimal readability
+    
+    # Semantic similarity settings for HR topic detection
+    hr_similarity_threshold: float = 0.55  # Lowered to be less restrictive for HR topics
+    hr_borderline_threshold_offset: float = 0.20  # Increased range for borderline checks
+    
+    # Enhanced document processing settings
+    chunk_size: int = 1500  # Increased for more comprehensive chunks
+    chunk_overlap: int = 300  # Increased overlap to preserve context
+    max_chunks_per_query: int = 12  # More chunks for comprehensive responses
+    enable_table_extraction: bool = True  # Extract tables from PDFs
+    enable_structure_preservation: bool = True  # Preserve document structure
+    ocr_fallback: bool = False  # Use OCR for scanned documents (requires tesseract)
     
     @classmethod
     def from_environment(cls) -> "PerformanceSettings":
@@ -161,6 +257,14 @@ class PerformanceSettings:
             enable_streaming=get_env_var_bool("ENABLE_STREAMING", cls.enable_streaming),
             streaming_delay=get_env_var_float("STREAMING_DELAY", cls.streaming_delay),
             max_chunk_size=get_env_var_int("MAX_CHUNK_SIZE", cls.max_chunk_size),
+            hr_similarity_threshold=get_env_var_float("HR_SIMILARITY_THRESHOLD", cls.hr_similarity_threshold),
+            hr_borderline_threshold_offset=get_env_var_float("HR_BORDERLINE_THRESHOLD_OFFSET", cls.hr_borderline_threshold_offset),
+            chunk_size=get_env_var_int("DOCUMENT_CHUNK_SIZE", cls.chunk_size),
+            chunk_overlap=get_env_var_int("DOCUMENT_CHUNK_OVERLAP", cls.chunk_overlap),
+            max_chunks_per_query=get_env_var_int("MAX_CHUNKS_PER_QUERY", cls.max_chunks_per_query),
+            enable_table_extraction=get_env_var_bool("ENABLE_TABLE_EXTRACTION", cls.enable_table_extraction),
+            enable_structure_preservation=get_env_var_bool("ENABLE_STRUCTURE_PRESERVATION", cls.enable_structure_preservation),
+            ocr_fallback=get_env_var_bool("OCR_FALLBACK", cls.ocr_fallback),
         )
 
 @dataclass(frozen=True)
@@ -177,6 +281,7 @@ class AppSettings:
     google_cloud: GoogleCloudSettings = field(default_factory=GoogleCloudSettings.from_environment)
     feedback: FeedbackSettings = field(default_factory=FeedbackSettings.from_environment)
     hr_support: HRSupportSettings = field(default_factory=HRSupportSettings.from_environment)
+    aws: AWSSettings = field(default_factory=AWSSettings.from_environment)
     performance: PerformanceSettings = field(default_factory=PerformanceSettings.from_environment)
     session_idle_minutes: int = 30
 
@@ -187,6 +292,8 @@ class AppSettings:
         logger.info("Environment variables loaded; building AppSettings")
         return cls(
             db=DatabaseSettings.from_environment(),
+            gemini=GeminiSettings.from_environment(),
+            aws=AWSSettings.from_environment(),
             app_name=get_env_var("APP_NAME", cls.app_name),
             host=get_env_var("HOST", cls.host),
             port=get_env_var_int("PORT", cls.port),
@@ -198,6 +305,10 @@ class AppSettings:
 try:
     settings = AppSettings.from_environment()
     logger.info(f"Config loaded for env='{settings.app_name}'")
+    if settings.aws.use_secrets_manager:
+        logger.info("AWS Secrets Manager integration enabled")
+    if settings.gemini.use_aws_secrets:
+        logger.info("Gemini credentials loaded from AWS Secrets Manager")
 except Exception as exc: 
     logger.critical("‼️  Failed to load configuration – exiting", exc_info=exc)
     raise
