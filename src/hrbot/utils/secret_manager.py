@@ -87,8 +87,7 @@ def get_database_credentials(
             "port": str(credentials.get("PORT", "5432")),
             "database": credentials.get("DATABASE_NAME"),
             "schema": credentials.get("SCHEMA_NAME", "ai_chatbot"),
-            # Default SSL mode – override in secret if needed
-            "sslmode": credentials.get("SSLMODE", "disable")
+            "sslmode": "disable"  # This database doesn't support SSL
         }
         
         # Validate required fields
