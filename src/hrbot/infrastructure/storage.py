@@ -18,6 +18,8 @@ from pathlib import Path
 from datetime import datetime
 import shutil
 
+import psycopg2
+
 from hrbot.utils.error import StorageError, ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -325,15 +327,12 @@ class StorageFactory:
 try:
     import redis.asyncio as redis
     
-    class RedisStorage(Storage[T]):
+    class PostgresStorage(Storage[T]):
         """Redis-based storage implementation."""
         
         def __init__(
             self,
-            host: str = "localhost",
-            port: int = 6379,
-            db: int = 0,
-            prefix: str = "hrbot:",
+            url: str = "postgresql://localhost:5432/hrbot",
             serializer: str = "pickle",
             **kwargs
         ):
@@ -348,10 +347,10 @@ try:
                 serializer: Serialization format ('json' or 'pickle')
                 **kwargs: Additional Redis client arguments
             """
-            self.prefix = prefix
+            self.prefix = "2/hrbot"
             self.serializer = serializer
-            self.client = redis.Redis(host=host, port=port, db=db, **kwargs)
-            logger.info(f"Initialized Redis storage at {host}:{port}")
+            self.client = psycopg2.connect(url)
+            logger.info(f"Initialized Postgres storage at {url}")
         
         def _get_key(self, key: str) -> str:
             """Add prefix to key."""
@@ -477,10 +476,10 @@ try:
                 )
         
     # Add Redis to factory
-    def get_redis_storage(**kwargs) -> RedisStorage:
-        return RedisStorage(**kwargs)
-    
-    StorageFactory.get_redis_storage = staticmethod(get_redis_storage)
+    def get_postgres_storage(**kwargs) -> PostgresStorage:
+        return PostgresStorage(**kwargs)
+    logger.info("Postgres available. Postgres storage will be available.")  
+    StorageFactory.get_postgres_storage = staticmethod(get_postgres_storage)
     
 except ImportError:
-    logger.info("Redis not available. Redis storage will not be available.")
+    logger.info("Postgres not available. Postgres storage will not be available.")

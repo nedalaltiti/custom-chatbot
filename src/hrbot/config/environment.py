@@ -18,7 +18,7 @@ except ImportError:
     DOTENV_LOADED = False
 
 # Configure logging
-logger = logging.getLogger("customer_sentiment_hub.config")
+logger = logging.getLogger("hrbot.config")
 
 # Type variable for generic type hints
 T = TypeVar('T')

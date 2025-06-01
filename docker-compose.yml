@@ -1,0 +1,94 @@
+version: '3.8'
+
+networks:
+  hrbot-network:
+    driver: bridge
+    name: hrbot-network
+
+volumes:
+  # Persistent data storage
+  hrbot-data:
+    name: hrbot-data
+  hrbot-logs:
+    name: hrbot-logs
+  hrbot-knowledge:
+    name: hrbot-knowledge
+
+services:
+  hrbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        POETRY_VERSION: 1.6.1
+        APP_USER: hrbot
+        APP_UID: 1000
+        APP_GID: 1000
+    
+    image: hrbot:latest
+    container_name: hrbot-app
+    
+    # Restart policy for reliability
+    restart: unless-stopped
+    
+    # Port mapping
+    ports:
+      - "3978:3978"  # Teams Bot port
+    
+    # Load environment from .env file
+    env_file:
+      - .env
+    
+    # Additional environment variables (these complement your .env file)
+    environment:
+      # Container-specific settings
+      - PYTHONPATH=/app/src
+      - PATH=/app/.venv/bin:$$PATH
+      
+      # Ensure host binding for container
+      - HOST=0.0.0.0
+      - PORT=3978
+    
+    # Volume mounts for persistent data
+    volumes:
+      - hrbot-data:/app/data
+      - hrbot-logs:/app/logs
+      - hrbot-knowledge:/app/data/knowledge
+    
+    # Health check - matches Dockerfile format
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3978/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot,environment=${DEBUG:-production}"
+    
+    # Network
+    networks:
+      - hrbot-network
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # User configuration (non-root) - matches Dockerfile
+    user: "1000:1000"
