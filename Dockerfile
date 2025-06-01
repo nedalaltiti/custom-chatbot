@@ -43,9 +43,6 @@ COPY scripts/ ./scripts/
 # Copy data directory from builder (includes knowledge & embeddings)
 COPY data/ ./data/
 
-# Copy embeddings directory from builder
-COPY embeddings/ ./embeddings/
-
 # Install the application
 RUN poetry install --only-root
 
