@@ -40,6 +40,12 @@ RUN poetry config virtualenvs.create true && \
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 
+# Copy data directory from builder (includes knowledge & embeddings)
+COPY data/ ./data/
+
+# Copy embeddings directory from builder
+COPY embeddings/ ./embeddings/
+
 # Install the application
 RUN poetry install --only-root
 
@@ -89,6 +95,9 @@ COPY --from=builder --chown=${APP_USER}:${APP_USER} /app/.venv /app/.venv
 # Copy application code
 COPY --from=builder --chown=${APP_USER}:${APP_USER} /app/src /app/src
 COPY --from=builder --chown=${APP_USER}:${APP_USER} /app/scripts /app/scripts
+
+# Copy data directory from builder (includes knowledge & embeddings)
+COPY --from=builder --chown=${APP_USER}:${APP_USER} /app/data /app/data
 
 # Create necessary directories with proper permissions
 RUN mkdir -p /app/data/{conversations,embeddings,knowledge} \
