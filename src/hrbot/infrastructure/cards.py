@@ -56,15 +56,18 @@ def _list_item(emoji: str, text: str) -> dict:
         ]
     }
 
+# def create_welcome_card(user_name: str = "there") -> dict:
 def create_welcome_card(user_name: str = "there") -> dict:
     """Elegant, theme-aware welcome card with simplified greeting."""
+    header = f"Hi {user_name}"
+
     return {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "type": "AdaptiveCard",
         "version": "1.4",
         "body": [
             # Large, brand-coloured banner
-            brand_header(f"Hi {user_name}!"),
+            brand_header(header),
             {
                 "type": "TextBlock",
                 "text": (

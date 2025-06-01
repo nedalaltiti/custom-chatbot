@@ -1,323 +1,444 @@
 """
-Vector store implementation for document embeddings and semantic search.
-
-This module provides a vector store implementation that can be used to:
-1. Generate and store embeddings for document chunks
-2. Perform semantic similarity search to find relevant context
-3. Work with numpy for vector operations (no FAISS dependency)
-
-It implements a production-ready vector database with both in-memory and persistent storage options.
+In-house NumPy/ndarray vector store (disk-backed, no FAISS).
 """
 
-import os
+from __future__ import annotations
+
+import asyncio
 import logging
 import pickle
-import numpy as np
-import asyncio
-from typing import List, Dict, Any, Optional, Tuple
+import time
 from pathlib import Path
-from datetime import datetime
-from hrbot.core.document import Document
+from typing import List, Sequence, Dict, Tuple
 
-# Custom embeddings implementation using Vertex AI directly
+import numpy as np
+
+from hrbot.core.document import Document
 from hrbot.infrastructure.embeddings import VertexDirectEmbeddings
+from hrbot.utils.error import StorageError, ErrorCode
 from hrbot.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+
 class VectorStore:
-    """
-    Simple vector store for semantic search using numpy and Google Vertex AI embeddings.
-    
-    This class handles:
-    1. Document storage and embedding with Google Vertex AI
-    2. Similarity search for finding relevant documents
-    3. Persistence to disk for document embedding cache
-    """
-    
-    def __init__(self, collection_name: str = "hr_documents"):
-        """
-        Initialize the vector store.
-        
-        Args:
-            collection_name: Name to identify this collection of documents
-        """
+    """Minimal but solid disk-backed cosine-similarity store with caching."""
+
+    FILE_EXT = ".npz"          # single compressed archive <collection>.npz
+
+    def __init__(
+        self,
+        *,
+        collection_name: str = "hr_documents",
+        data_dir: str | Path = "data/embeddings",
+        embeddings: VertexDirectEmbeddings | None = None,
+    ) -> None:
         self.collection_name = collection_name
-        self.data_dir = Path("data/embeddings")
-        self.embedding_path = self.data_dir / f"{collection_name}_embeddings.npy"
-        self.docstore_path = self.data_dir / f"{collection_name}_docs.pkl"
-        self.embeddings_model = None
-        self.document_embeddings = None  # numpy array of embeddings
-        self.documents = []  # list of Document objects
-        self.initialized = False
-        self._initialize()
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        self._archive_path = self.data_dir / f"{collection_name}{self.FILE_EXT}"
+        self._doclist_path = self.data_dir / f"{collection_name}_docs.pkl"
+
+        self._embeddings = embeddings or VertexDirectEmbeddings()
+        # engine.py expects this name
+        self.embeddings_model = self._embeddings
+        self._matrix: np.ndarray | None = None       # shape (N, dim)
+        self._docs: list[Document] = []
         
-    def _initialize(self):
-        """Initialize the embedding model and vector store."""
-        try:
-            # Initialize embedding model
-            logger.info(f"[VECTOR DEBUG] Initializing embedding model for {self.collection_name}")
-            
-            # Use our custom direct embedding implementation
+        # Simple cache for similarity searches
+        self._cache: Dict[Tuple[str, int], Tuple[List[Document], float]] = {}
+        self._cache_enabled = settings.performance.cache_embeddings
+        self._cache_ttl = settings.performance.cache_ttl_seconds
+
+        self._load_or_init()
+
+    @property
+    def documents(self) -> list[Document]:
+        """Public accessor used by the ingest layer."""
+        return self._docs
+
+    def _load_or_init(self) -> None:
+        if self._archive_path.exists() and self._doclist_path.exists():
             try:
-                self.embeddings_model = VertexDirectEmbeddings(
-                    model_name=settings.embeddings.model_name,
-                    project=settings.google_cloud.project_id,
-                    location=settings.google_cloud.location
+                self._matrix = np.load(self._archive_path)["arr_0"]
+                with open(self._doclist_path, "rb") as f:
+                    self._docs = pickle.load(f)
+                logger.info(
+                    "VectorStore loaded (%d docs, dim=%d)",
+                    len(self._docs),
+                    self._matrix.shape[1],
                 )
-                logger.info(f"[VECTOR DEBUG] Successfully initialized embeddings with model: {self.embeddings_model.model_name}")
-            except Exception as e:
-                logger.error(f"[VECTOR DEBUG] Error initializing embeddings: {str(e)}")
-                raise
+                return
+            except Exception as exc:                                 # noqa: BLE001
+                logger.warning("Corrupted vector store – rebuilding (%s)", exc)
+
+        # fresh empty store
+        dim = self._embeddings.dimension
+        self._matrix = np.empty((0, dim), dtype=np.float32)
+        self._docs = []
+        logger.info("VectorStore initialised empty (dim=%d)", dim)
+
+    def sync_disk(self) -> None:
+        """Flush current state to disk (atomic)."""
+        if self._matrix is None:      # pragma: no cover
+            return
+
+        tmp = self._archive_path.with_suffix(".tmp.npz")   # ends with .npz
+        np.savez_compressed(tmp, self._matrix)             # atomic
+        tmp.replace(self._archive_path)
+
+        with open(self._doclist_path, "wb") as f:
+            pickle.dump(self._docs, f)
             
-            # Try to load existing embeddings and documents
-            logger.info(f"[VECTOR DEBUG] Checking for existing embeddings at {self.embedding_path}")
-            if self._load_from_disk():
-                logger.info(f"[VECTOR DEBUG] Loaded existing vector store with {len(self.documents)} documents")
+        # Clear cache when store is updated
+        self._cache.clear()
+
+
+    async def add_documents(self, docs: Sequence[Document]) -> int:
+        """Embed & add *only* the docs that are not present yet.
+
+        Returns the **number of NEW documents embedded**.
+        """
+        if not docs:
+            return 0
+        if self._matrix is None:
+            raise RuntimeError("VectorStore not initialised")
+
+        existing_hashes = {d.metadata.get("sha256") or d.sha256() for d in self._docs}
+        fresh: list[Document] = []
+        for d in docs:
+            h = d.sha256()
+            if h not in existing_hashes:
+                d.metadata["sha256"] = h
+                fresh.append(d)
+
+        if not fresh:
+            return 0
+
+        texts = [d.page_content for d in fresh]
+        embeds = await asyncio.to_thread(self._embeddings.embed_documents, texts)
+        embeds = np.asarray(embeds, dtype=np.float32)
+
+        # L2-normalise ⇒ cosine == dot
+        embeds /= np.linalg.norm(embeds, axis=1, keepdims=True) + 1e-9
+
+        self._matrix = (
+            np.vstack([self._matrix, embeds]) if self._matrix.size else embeds
+        )
+        self._docs.extend(fresh)
+        self.sync_disk()
+        logger.info("Added %d new docs (total =%d)", len(fresh), len(self._docs))
+        return len(fresh)
+
+    async def similarity_search(
+         self,
+         query: str,
+         k: int = 5,
+         *,
+         top_k: int | None = None,      
+
+     ) -> list[Document]:
+        logger.debug(f"Similarity search called with query: '{query[:50]}...', k={k}, docs available: {len(self._docs)}")
+        
+        if self._matrix is None or not len(self._docs):
+            logger.warning(f"No documents available for search! Matrix: {self._matrix is not None}, Docs: {len(self._docs)}")
+            return []
+
+        if top_k is not None:
+            k = top_k
+            
+        # Check cache first
+        cache_key = (query, k)
+        if self._cache_enabled and cache_key in self._cache:
+            cached_result, timestamp = self._cache[cache_key]
+            if time.time() - timestamp < self._cache_ttl:
+                logger.debug(f"Cache hit for query: {query[:50]}...")
+                return cached_result
             else:
-                # Initialize empty arrays
-                logger.info(f"[VECTOR DEBUG] Creating new empty vector store")
-                # Handle case where embeddings_model might be None in fallback scenario
-                dim = getattr(self.embeddings_model, 'dimension', 768)
-                self.document_embeddings = np.array([], dtype=np.float32).reshape(0, dim)
-                self.documents = []
-                self._save_to_disk()
-                
-            self.initialized = True
-            
-        except Exception as e:
-            logger.error(f"[VECTOR DEBUG] Error initializing vector store: {str(e)}")
-            # Use fallback in-memory storage without embeddings
-            logger.warning("Using fallback in-memory vector store without embeddings")
-            self.document_embeddings = None
-            self.documents = []
-            self.initialized = True  # Set to true so we can still operate in fallback mode
+                # Remove expired entry
+                del self._cache[cache_key]
+
+        q = await asyncio.to_thread(self._embeddings.embed_query, query)
+        q = np.asarray(q, dtype=np.float32)
+        q /= np.linalg.norm(q) + 1e-9
+
+        sims = self._matrix @ q
+        top_idx = np.argsort(sims)[-k:][::-1]
+        results = [self._docs[i] for i in top_idx]
+        
+        # Debug logging
+        logger.debug(f"Similarity scores: {[sims[i] for i in top_idx[:5]]}")  # Top 5 scores
+        logger.debug(f"Retrieved {len(results)} documents for query: '{query[:30]}...'")
+        if results:
+            logger.debug(f"Top result: {results[0].page_content[:100]}...")
+        
+        # Cache the results
+        if self._cache_enabled:
+            self._cache[cache_key] = (results, time.time())
+            # Clean up old cache entries if cache is getting large
+            if len(self._cache) > 100:
+                current_time = time.time()
+                expired_keys = [
+                    key for key, (_, timestamp) in self._cache.items()
+                    if current_time - timestamp >= self._cache_ttl
+                ]
+                for key in expired_keys:
+                    del self._cache[key]
+        
+        return results
 
     async def warmup(self) -> None:
-        """
-        Pre-load any resources needed at runtime.
+        """Load data into RAM (called from FastAPI lifespan)."""
+        if self._matrix is not None and self._matrix.size:
+            _ = float(self._matrix[0] @ self._matrix[0])  # touch memory
 
-        By default this just ensures the store is initialised and, if
-        embeddings are on disk, reads them once so the first real query
-        is fast.  Override in subclasses if you need heavier logic.
-        """
-        if not self.initialized:
-            self._initialize()
+    async def clear(self) -> None:
+        """Danger: wipe cache from disk & memory."""
+        for p in (self._archive_path, self._doclist_path):
+            p.unlink(missing_ok=True)
+        self._cache.clear()
+        self._load_or_init()
+        
+    async def delete_collection(self) -> None:
+        """Delete the entire collection."""
+        await self.clear()
 
-        # Force a tiny cosine-similarity pass to pull the entire NumPy
-        # array into memory (OS cache → RAM).
-        if (
-            self.document_embeddings is not None
-            and len(self.document_embeddings) > 0
-        ):
-            _ = float(np.dot(self.document_embeddings[0], self.document_embeddings[0]))
+
+# Optional ChromaDB implementation for enhanced vector database capabilities
+try:
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
     
-    def _load_from_disk(self) -> bool:
+    class ChromaVectorStore:
         """
-        Load vector store from disk.
+        Enhanced vector store using ChromaDB for better performance and features.
         
-        Returns:
-            bool: True if loaded successfully
+        Advantages over basic VectorStore:
+        - Better scalability and performance
+        - Advanced filtering and metadata queries
+        - Built-in persistence and reliability
+        - Support for multiple collections
+        - Advanced similarity algorithms
         """
-        try:
-            if self.embedding_path.exists() and self.docstore_path.exists():
-                # Load document embeddings & pre-normalise (unit vectors)
-                raw = np.load(self.embedding_path)
-                norm = np.linalg.norm(raw, axis=1, keepdims=True)
-                norm[norm == 0] = 1.0
-                self.document_embeddings = raw / norm
-                
-                # Load document list
-                with open(self.docstore_path, 'rb') as f:
-                    self.documents = pickle.load(f)
-                    
-                logger.info(f"[VECTOR DEBUG] Loaded {len(self.documents)} documents from disk")
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"[VECTOR DEBUG] Error loading vector store from disk: {str(e)}")
-            return False
-    
-    def _save_to_disk(self):
-        """Save vector store to disk."""
-        try:
-            if self.initialized and self.documents:
-                logger.info(f"[VECTOR DEBUG] Saving vector store to disk")
-                
-                # Create directory if it doesn't exist
-                self.data_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Save embeddings if we have them
-                if self.document_embeddings is not None and len(self.document_embeddings) > 0:
-                    np.save(self.embedding_path, self.document_embeddings)
-                
-                # Save document list
-                with open(self.docstore_path, 'wb') as f:
-                    pickle.dump(self.documents, f)
-                
-                logger.info(f"[VECTOR DEBUG] Successfully saved vector store with {len(self.documents)} documents")
-        except Exception as e:
-            logger.error(f"[VECTOR DEBUG] Error saving vector store to disk: {str(e)}")
-    
-    async def add_documents(self, documents: List[Document]) -> bool:
-        """
-        Add documents to the vector store.
         
-        Args:
-            documents: List of Document objects to add
+        def __init__(
+            self,
+            *,
+            collection_name: str = "hr_documents",
+            data_dir: str | Path = "data/chroma",
+            embeddings: VertexDirectEmbeddings | None = None,
+        ) -> None:
+            self.collection_name = collection_name
+            self.data_dir = Path(data_dir)
+            self.data_dir.mkdir(parents=True, exist_ok=True)
             
-        Returns:
-            bool: True if successful
-        """
-        try:
-            if not documents:
-                logger.warning("[VECTOR DEBUG] No documents to add")
-                return False
-                
-            if not self.initialized:
-                logger.error("[VECTOR DEBUG] Vector store not initialized")
-                return False
-                
-            if self.embeddings_model:
-                # Generate embeddings for documents (offloaded)
-                logger.info(f"[VECTOR DEBUG] Generating embeddings for {len(documents)} documents")
-                texts = [doc.page_content for doc in documents]
-                new_embeddings = await asyncio.to_thread(self.embeddings_model.embed_documents, texts)
-                
-                # Convert & normalise
-                new_embeddings_array = np.array(new_embeddings, dtype=np.float32)
-                norms = np.linalg.norm(new_embeddings_array, axis=1, keepdims=True)
-                norms[norms == 0] = 1.0
-                new_embeddings_array = new_embeddings_array / norms
-                
-                # Add to existing embeddings
-                if self.document_embeddings is not None and len(self.document_embeddings) > 0:
-                    self.document_embeddings = np.vstack([self.document_embeddings, new_embeddings_array])
-                else:
-                    self.document_embeddings = new_embeddings_array
-                
-                # Add to document list
-                self.documents.extend(documents)
-                
-                # Save to disk
-                self._save_to_disk()
-                
-                logger.info(f"[VECTOR DEBUG] Successfully added {len(documents)} documents")
-                return True
-            else:
-                # Fallback to just storing documents in memory without embeddings
-                logger.warning("[VECTOR DEBUG] Using fallback storage (no embeddings)")
-                self.documents.extend(documents)
-                return True
-                
-        except Exception as e:
-            logger.error(f"[VECTOR DEBUG] Error adding documents: {str(e)}")
-            return False
-    
-    async def similarity_search(self, query: str, top_k: int = 5) -> List[Document]:
-        """
-        Perform similarity search for a query using cosine similarity.
-        
-        Args:
-            query: The query string
-            top_k: Number of results to return
+            self._embeddings = embeddings or VertexDirectEmbeddings()
+            self.embeddings_model = self._embeddings
             
-        Returns:
-            List of Document objects
-        """
-        try:
-            if not self.initialized:
-                logger.error("[VECTOR DEBUG] Vector store not initialized")
+            # Initialize ChromaDB client
+            chroma_settings = ChromaSettings(
+                chroma_db_impl="duckdb+parquet",
+                persist_directory=str(self.data_dir),
+                anonymized_telemetry=False
+            )
+            
+            self._client = chromadb.Client(chroma_settings)
+            
+            # Get or create collection
+            try:
+                self._collection = self._client.get_collection(
+                    name=collection_name,
+                    embedding_function=None  # We'll handle embeddings ourselves
+                )
+                logger.info(f"Loaded existing ChromaDB collection: {collection_name}")
+            except ValueError:
+                self._collection = self._client.create_collection(
+                    name=collection_name,
+                    embedding_function=None
+                )
+                logger.info(f"Created new ChromaDB collection: {collection_name}")
+        
+        @property 
+        def documents(self) -> list[Document]:
+            """Get all documents from the collection."""
+            try:
+                result = self._collection.get()
+                docs = []
+                
+                if result['documents']:
+                    for i, doc_text in enumerate(result['documents']):
+                        metadata = result['metadatas'][i] if result['metadatas'] else {}
+                        docs.append(Document(page_content=doc_text, metadata=metadata))
+                
+                return docs
+            except Exception as e:
+                logger.warning(f"Error retrieving documents from ChromaDB: {e}")
                 return []
-                
-            if (self.embeddings_model and 
-                self.document_embeddings is not None and 
-                len(self.document_embeddings) > 0 and 
-                len(self.documents) > 0):
-                
-                # Generate & normalise embedding for query
-                logger.info(f"[VECTOR DEBUG] Generating embedding for query: {query[:50]}...")
-                query_emb = await asyncio.to_thread(self.embeddings_model.embed_query, query)
-                query_emb = np.array(query_emb, dtype=np.float32)
-                query_emb = query_emb / (np.linalg.norm(query_emb) or 1.0)
-                similarities = np.dot(self.document_embeddings, query_emb)
-                
-                # Get top-k indices
-                top_indices = np.argsort(similarities)[-top_k:][::-1]
-                
-                # Get documents for top indices
-                results = [self.documents[i] for i in top_indices]
-                
-                logger.info(f"[VECTOR DEBUG] Found {len(results)} results")
-                return results
-            else:
-                # Fallback to basic keyword search
-                logger.warning("Using fallback keyword search instead of semantic search")
-                return self._fallback_keyword_search(query, top_k)
-                
-        except Exception as e:
-            logger.error(f"[VECTOR DEBUG] Error in similarity search: {str(e)}")
-            # Fallback to keyword search
-            return self._fallback_keyword_search(query, top_k)
-    
-    def _fallback_keyword_search(self, query: str, top_k: int = 5) -> List[Document]:
-        """
-        Fallback keyword search when vector search is unavailable.
         
-        Args:
-            query: The query string
-            top_k: Number of results to return
+        async def add_documents(self, docs: Sequence[Document]) -> int:
+            """Add documents to ChromaDB with deduplication."""
+            if not docs:
+                return 0
             
-        Returns:
-            List of Document objects
-        """
-        try:
-            if not self.documents:
+            # Check for existing documents to avoid duplicates
+            existing_hashes = set()
+            try:
+                result = self._collection.get()
+                if result['metadatas']:
+                    existing_hashes = {
+                        meta.get('sha256') for meta in result['metadatas'] 
+                        if meta.get('sha256')
+                    }
+            except Exception as e:
+                logger.warning(f"Error checking existing documents: {e}")
+            
+            # Filter new documents
+            fresh_docs = []
+            for doc in docs:
+                doc_hash = doc.sha256()
+                if doc_hash not in existing_hashes:
+                    doc.metadata['sha256'] = doc_hash
+                    fresh_docs.append(doc)
+            
+            if not fresh_docs:
+                return 0
+            
+            # Generate embeddings
+            texts = [doc.page_content for doc in fresh_docs]
+            embeddings = await asyncio.to_thread(
+                self._embeddings.embed_documents, 
+                texts
+            )
+            
+            # Prepare data for ChromaDB
+            ids = [f"doc_{hash(doc.page_content)}_{i}" for i, doc in enumerate(fresh_docs)]
+            metadatas = [doc.metadata for doc in fresh_docs]
+            
+            # Add to collection
+            try:
+                self._collection.add(
+                    embeddings=embeddings,
+                    documents=texts,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+                
+                # Persist changes
+                self._client.persist()
+                
+                logger.info(f"Added {len(fresh_docs)} new documents to ChromaDB")
+                return len(fresh_docs)
+                
+            except Exception as e:
+                logger.error(f"Error adding documents to ChromaDB: {e}")
+                return 0
+        
+        async def similarity_search(
+            self,
+            query: str,
+            k: int = 5,
+            *,
+            top_k: int | None = None,
+            where: Dict | None = None  # Additional filtering
+        ) -> list[Document]:
+            """Search for similar documents using ChromaDB."""
+            if top_k is not None:
+                k = top_k
+            
+            try:
+                # Generate query embedding
+                query_embedding = await asyncio.to_thread(
+                    self._embeddings.embed_query, 
+                    query
+                )
+                
+                # Perform similarity search
+                results = self._collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=k,
+                    where=where,
+                    include=['documents', 'metadatas', 'distances']
+                )
+                
+                # Convert results to Document objects
+                documents = []
+                if results['documents'] and results['documents'][0]:
+                    for i, doc_text in enumerate(results['documents'][0]):
+                        metadata = results['metadatas'][0][i] if results['metadatas'][0] else {}
+                        
+                        # Add similarity score to metadata
+                        if results['distances'] and results['distances'][0]:
+                            # ChromaDB returns distances (lower is better), convert to similarity
+                            distance = results['distances'][0][i]
+                            similarity = 1 / (1 + distance)  # Convert distance to similarity
+                            metadata['similarity_score'] = similarity
+                        
+                        documents.append(Document(
+                            page_content=doc_text,
+                            metadata=metadata
+                        ))
+                
+                return documents
+                
+            except Exception as e:
+                logger.error(f"Error in ChromaDB similarity search: {e}")
                 return []
-                
-            # Simple keyword matching
-            query_terms = query.lower().split()
-            results = []
-            
-            for doc in self.documents:
-                content = doc.page_content.lower()
-                # Count how many query terms appear in the document
-                matches = sum(1 for term in query_terms if term in content)
-                if matches > 0:
-                    results.append((doc, matches))
-            
-            # Sort by number of matches (descending)
-            results.sort(key=lambda x: x[1], reverse=True)
-            
-            # Return top_k documents
-            return [doc for doc, _ in results[:top_k]]
-            
-        except Exception as e:
-            logger.error(f"[VECTOR DEBUG] Error in fallback search: {str(e)}")
-            return []
-    
-    async def delete_collection(self) -> bool:
-        """
-        Delete the entire collection.
         
-        Returns:
-            bool: True if successful
-        """
-        try:
-            # Reset in-memory store
-            dim = getattr(self.embeddings_model, 'dimension', 768)
-            self.document_embeddings = np.array([], dtype=np.float32).reshape(0, dim)
-            self.documents = []
-            
-            # Delete files if they exist
-            if self.embedding_path.exists():
-                os.remove(self.embedding_path)
-            if self.docstore_path.exists():
-                os.remove(self.docstore_path)
-                
-            logger.info(f"[VECTOR DEBUG] Deleted vector store collection: {self.collection_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"[VECTOR DEBUG] Error deleting collection: {str(e)}")
-            return False 
+        async def warmup(self) -> None:
+            """Warmup ChromaDB collection."""
+            try:
+                # Test query to warm up the collection
+                await self.similarity_search("test", k=1)
+                logger.debug("ChromaDB warmed up successfully")
+            except Exception as e:
+                logger.warning(f"ChromaDB warmup failed: {e}")
+        
+        async def clear(self) -> None:
+            """Clear all documents from the collection."""
+            try:
+                self._client.delete_collection(self.collection_name)
+                self._collection = self._client.create_collection(
+                    name=self.collection_name,
+                    embedding_function=None
+                )
+                logger.info(f"Cleared ChromaDB collection: {self.collection_name}")
+            except Exception as e:
+                logger.error(f"Error clearing ChromaDB collection: {e}")
+        
+        async def delete_collection(self) -> None:
+            """Delete the entire collection."""
+            await self.clear()
+    
+    logger.info("ChromaDB available - enhanced vector store enabled")
+    
+except ImportError:
+    class ChromaVectorStore:
+        """Placeholder class when ChromaDB is not available."""
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "ChromaDB not installed. Install with: pip install chromadb\n"
+                "Or use the basic VectorStore implementation."
+            )
+    
+    logger.info("ChromaDB not available - using basic VectorStore only")
+
+
+def create_vector_store(
+    store_type: str = "basic",
+    **kwargs
+) -> VectorStore | ChromaVectorStore:
+    """
+    Factory function to create the appropriate vector store.
+    
+    Args:
+        store_type: "basic" for NumPy-based store, "chroma" for ChromaDB
+        **kwargs: Additional arguments for the vector store
+        
+    Returns:
+        Configured vector store instance
+    """
+    if store_type.lower() == "chroma":
+        return ChromaVectorStore(**kwargs)
+    else:
+        return VectorStore(**kwargs)

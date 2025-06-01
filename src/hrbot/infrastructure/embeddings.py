@@ -1,130 +1,99 @@
 """
-Direct embedding implementation using Google Vertex AI.
+Light-weight *lazy* wrapper around Google Vertex AI Text-Embedding models.
 
-This module provides a custom embeddings implementation that uses
-the Vertex AI SDK directly rather than relying on LangChain's wrappers.
+• Initialise only when the first embedding is requested
+• Simple exponential back-off (3 tries) – good for cold starts
+• Memoises model dimension so callers do not have to probe
 """
 
-import logging
-import numpy as np
-from typing import List, Any, Optional
-from hrbot.config.settings import settings
+from __future__ import annotations
 
-# Import Vertex AI SDK
+import asyncio
+import logging
+import time
+import os
+from typing import List, Optional
+
 from google.cloud import aiplatform
 from vertexai.preview.language_models import TextEmbeddingModel
 
+from hrbot.config.settings import settings
+
 logger = logging.getLogger(__name__)
 
+
 class VertexDirectEmbeddings:
-    """
-    Custom embeddings implementation using Vertex AI directly.
-    
-    This class bypasses LangChain's VertexAIEmbeddings implementation and
-    uses the Vertex AI Python SDK directly, allowing us to use newer models
-    like text-embedding-005 which may not be supported in LangChain yet.
-    """
-    
+    """Thin async-friendly wrapper around `text-embedding-xxx` models."""
+
+    RETRIES = 3
+    BATCH_SIZE = 16            # 16×768 ≈ 49 kB :: well below 1 MiB payload limit
+
     def __init__(
         self,
+        *,
         model_name: str = "text-embedding-005",
         project: Optional[str] = None,
         location: str = "us-central1",
-        **kwargs
-    ):
-        """
-        Initialize the embeddings model.
-        
-        Args:
-            model_name: Name of the embedding model to use
-            project: Google Cloud project ID
-            location: Google Cloud location
-            **kwargs: Additional arguments to pass to the model
-        """
-        self.model_name = model_name
+    ) -> None:
         self.project = project or settings.google_cloud.project_id
         self.location = location or settings.google_cloud.location
-        self.model = None
-        self.dimension = 768  # Default dimension for text-embedding-005
+        self.model_name = model_name
+
+        self._model: Optional[TextEmbeddingModel] = None
+        self.dimension: int = 768        # default; overwritten on first call
+
+    def _ensure_model(self) -> None:
+        if self._model is not None:
+            return
+
+        delay = 1.0
+        last_err: Exception | None = None
         
-        # Initialize the model
-        self.initialize_model()
+        # Debug credential availability
+        creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or self.project
         
-    def initialize_model(self):
-        """Initialize the Vertex AI embedding model."""
-        try:
-            # Initialize Vertex AI with project settings
-            aiplatform.init(
-                project=self.project,
-                location=self.location
-            )
-            
-            # Load the embedding model
-            logger.info(f"Initializing embedding model: {self.model_name}")
-            self.model = TextEmbeddingModel.from_pretrained(self.model_name)
-            logger.info(f"Successfully initialized embedding model: {self.model_name}")
-            
-            # Test the model with a simple input to verify and get dimensions
-            test_result = self.model.get_embeddings(["Test embedding initialization"])
-            if len(test_result) > 0:
-                embedding_values = test_result[0].values
-                self.dimension = len(embedding_values)
-                logger.info(f"Embedding dimension: {self.dimension}")
-            
-        except Exception as e:
-            logger.error(f"Error initializing embedding model: {str(e)}")
-            raise
-    
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """
-        Generate embeddings for a list of documents.
+        logger.debug(f"Embeddings init: credentials_path={creds_path}, project={project_id}, location={self.location}")
         
-        Args:
-            texts: List of document texts to embed
-            
-        Returns:
-            List of embeddings as float arrays
-        """
-        try:
-            if not self.model:
-                self.initialize_model()
-                
-            if not texts:
-                return []
-                
-            # Process in batches if needed (API may have limits)
-            batch_size = 5  # Adjust based on API limits
-            all_embeddings = []
-            
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i:i+batch_size]
-                response = self.model.get_embeddings(batch)
-                batch_embeddings = [emb.values for emb in response]
-                all_embeddings.extend(batch_embeddings)
-                
-            return all_embeddings
-            
-        except Exception as e:
-            logger.error(f"Error in embed_documents: {str(e)}")
-            raise
-    
+        if not creds_path:
+            logger.warning("No GOOGLE_APPLICATION_CREDENTIALS found for embeddings - this may cause authentication issues")
+        
+        for attempt in range(1, self.RETRIES + 1):
+            try:
+                aiplatform.init(project=project_id, location=self.location)
+                self._model = TextEmbeddingModel.from_pretrained(self.model_name)
+                # cheap single vector to discover true dimensionality
+                sample = self._model.get_embeddings(["ping"])[0].values
+                self.dimension = len(sample)
+                logger.info(
+                    "VertexEmbeddings initialised (dim=%s) on attempt %d",
+                    self.dimension,
+                    attempt,
+                )
+                return
+            except Exception as exc:                                # noqa: BLE001
+                last_err = exc
+                logger.warning("Embedding init failed (attempt %d): %s", attempt, exc)
+                time.sleep(delay)
+                delay *= 2
+
+        # exhausted retries
+        raise RuntimeError(f"Cannot initialise Vertex embeddings: {last_err}")
+
+
     def embed_query(self, text: str) -> List[float]:
-        """
-        Generate embedding for a single query text.
-        
-        Args:
-            text: The query text to embed
-            
-        Returns:
-            Embedding as a float array
-        """
-        try:
-            if not self.model:
-                self.initialize_model()
-                
-            response = self.model.get_embeddings([text])
-            return response[0].values
-            
-        except Exception as e:
-            logger.error(f"Error in embed_query: {str(e)}")
-            raise 
+        """Blocking – use `asyncio.to_thread` from the caller."""
+        self._ensure_model()
+        return self._model.get_embeddings([text])[0].values  # type: ignore[index]
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Blocking – split in mini-batches; caller off-loads to thread."""
+        if not texts:
+            return []
+
+        self._ensure_model()
+        out: List[List[float]] = []
+        for i in range(0, len(texts), self.BATCH_SIZE):
+            chunk = texts[i : i + self.BATCH_SIZE]
+            out.extend([emb.values for emb in self._model.get_embeddings(chunk)])  # type: ignore[attr-defined]
+        return out
