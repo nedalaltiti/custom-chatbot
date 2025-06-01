@@ -88,7 +88,7 @@ def create_welcome_card(user_name: str = "there") -> dict:
     }
 
 
-def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True):
+def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True, existing_comment: str = ""):
     """Create a feedback card rendered as a single horizontal row of 1-5 stars.
 
     • Each star is a Column with a TextBlock (⭐ or ☆) and a selectAction so it
@@ -96,6 +96,7 @@ def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True):
     • When a user taps a star we send `Action.Submit` with `action=submit_rating` &
       the chosen rating value. The router will re-render this same card with the
       selected stars filled.
+    • existing_comment: Preserves user's typed comment content when updating the card
     """
 
     def star_column(idx: int) -> dict:
@@ -113,6 +114,18 @@ def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True):
                 "color": "Accent" if filled else "Default"
             }]
         }
+
+    # Comment input with preserved value
+    comment_input = {
+        "type": "Input.Text",
+        "id": "comment",
+        "placeholder": "Any suggestions for improvement? (optional)",
+        "isMultiline": True
+    }
+    
+    # Preserve existing comment if provided
+    if existing_comment:
+        comment_input["value"] = existing_comment
 
     card = {
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -132,12 +145,7 @@ def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True):
                 "spacing": "Medium",
                 "columns": [star_column(i) for i in range(1, 6)]
             },
-            {
-                "type": "Input.Text",
-                "id": "comment",
-                "placeholder": "Any suggestions for improvement? (optional)",
-                "isMultiline": True
-            }
+            comment_input
         ],
         "actions": [
             {
@@ -154,7 +162,7 @@ def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True):
         ]
     }
 
-    return card 
+    return card
 
 def create_reaction_card(action_prefix: str = "react") -> dict:
     """Return an inline reaction bar with copy / like / dislike.
