@@ -200,10 +200,19 @@ class HRSupportSettings:
 
     @classmethod
     def from_environment(cls) -> "HRSupportSettings":
-        return cls(
-            url=get_env_var("HR_SUPPORT_URL", cls.url),
-            domain=get_env_var("HR_SUPPORT_DOMAIN", cls.domain),
-        )
+        try:
+            from hrbot.config.tenant import get_current_tenant
+            tenant = get_current_tenant()
+            return cls(
+                url=get_env_var("HR_SUPPORT_URL", tenant.hr_support_url),
+                domain=get_env_var("HR_SUPPORT_DOMAIN", tenant.hr_support_url.split("//")[1].split("/")[0]),
+            )
+        except ImportError:
+            # Fallback if tenant module not available (during initial setup)
+            return cls(
+                url=get_env_var("HR_SUPPORT_URL", cls.url),
+                domain=get_env_var("HR_SUPPORT_DOMAIN", cls.domain),
+            )
 
 @dataclass(frozen=True)
 class AWSSettings:

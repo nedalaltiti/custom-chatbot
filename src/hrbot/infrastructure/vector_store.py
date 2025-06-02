@@ -1,5 +1,5 @@
 """
-In-house NumPy/ndarray vector store (disk-backed, no FAISS).
+In-house NumPy/ndarray vector store (disk-backed, no FAISS) with multi-tenant support.
 """
 
 from __future__ import annotations
@@ -17,12 +17,13 @@ from hrbot.core.document import Document
 from hrbot.infrastructure.embeddings import VertexDirectEmbeddings
 from hrbot.utils.error import StorageError, ErrorCode
 from hrbot.config.settings import settings
+from hrbot.config.tenant import get_current_tenant
 
 logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    """Minimal but solid disk-backed cosine-similarity store with caching."""
+    """Minimal but solid disk-backed cosine-similarity store with caching and multi-tenant support."""
 
     FILE_EXT = ".npz"          # single compressed archive <collection>.npz
 
@@ -30,11 +31,19 @@ class VectorStore:
         self,
         *,
         collection_name: str = "hr_documents",
-        data_dir: str | Path = "data/embeddings",
+        data_dir: str | Path = None,  # Will be auto-detected from tenant if not provided
         embeddings: VertexDirectEmbeddings | None = None,
     ) -> None:
         self.collection_name = collection_name
-        self.data_dir = Path(data_dir)
+        
+        # Use tenant-specific data directory if not provided
+        if data_dir is None:
+            tenant = get_current_tenant()
+            self.data_dir = tenant.embeddings_dir
+            logger.info(f"Using tenant-specific embeddings directory: {self.data_dir}")
+        else:
+            self.data_dir = Path(data_dir)
+            
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         self._archive_path = self.data_dir / f"{collection_name}{self.FILE_EXT}"
@@ -65,9 +74,10 @@ class VectorStore:
                 with open(self._doclist_path, "rb") as f:
                     self._docs = pickle.load(f)
                 logger.info(
-                    "VectorStore loaded (%d docs, dim=%d)",
+                    "VectorStore loaded (%d docs, dim=%d) from %s",
                     len(self._docs),
                     self._matrix.shape[1],
+                    self.data_dir
                 )
                 return
             except Exception as exc:                                 # noqa: BLE001
@@ -77,7 +87,7 @@ class VectorStore:
         dim = self._embeddings.dimension
         self._matrix = np.empty((0, dim), dtype=np.float32)
         self._docs = []
-        logger.info("VectorStore initialised empty (dim=%d)", dim)
+        logger.info("VectorStore initialised empty (dim=%d) in %s", dim, self.data_dir)
 
     def sync_disk(self) -> None:
         """Flush current state to disk (atomic)."""
@@ -159,12 +169,21 @@ class VectorStore:
                 # Remove expired entry
                 del self._cache[cache_key]
 
+        # Use async embedding generation for better concurrency
         q = await asyncio.to_thread(self._embeddings.embed_query, query)
         q = np.asarray(q, dtype=np.float32)
         q /= np.linalg.norm(q) + 1e-9
 
-        sims = self._matrix @ q
-        top_idx = np.argsort(sims)[-k:][::-1]
+        # Optimized similarity computation using vectorized operations
+        sims = np.dot(self._matrix, q)  # More efficient than matrix multiplication
+        
+        # Use argpartition for better performance when k << n
+        if k < len(sims) // 10:  # Only use argpartition for small k
+            top_idx = np.argpartition(sims, -k)[-k:]
+            top_idx = top_idx[np.argsort(sims[top_idx])[::-1]]
+        else:
+            top_idx = np.argsort(sims)[-k:][::-1]
+            
         results = [self._docs[i] for i in top_idx]
         
         # Debug logging

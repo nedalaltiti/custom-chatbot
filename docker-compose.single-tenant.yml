@@ -1,0 +1,124 @@
+version: '3.8'
+
+networks:
+  hrbot-network:
+    driver: bridge
+    name: hrbot-network
+
+volumes:
+  # Unified data storage with tenant subdirectories
+  hrbot-data:
+    name: hrbot-data
+  hrbot-logs:
+    name: hrbot-logs
+
+services:
+  hrbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        POETRY_VERSION: 1.6.1
+        APP_USER: hrbot
+        APP_UID: 1000
+        APP_GID: 1000
+    
+    image: hrbot:latest
+    container_name: hrbot-multi-tenant
+    
+    restart: unless-stopped
+    
+    ports:
+      - "3978:3978"
+    
+    env_file:
+      - .env
+    
+    environment:
+      # Multi-tenant configuration
+      # Tenant will be detected dynamically via:
+      # 1. TENANT_REGION environment variable (if set)
+      # 2. Configuration file detection
+      # 3. Subdomain detection (if behind load balancer)
+      
+      - PYTHONPATH=/app/src
+      - PATH=/app/.venv/bin:$$PATH
+      - HOST=0.0.0.0
+      - PORT=3978
+      
+      # Default tenant (can be overridden)
+      - DEFAULT_TENANT_REGION=jordan
+      
+      # Multi-tenant features
+      - MULTI_TENANT_ENABLED=true
+      - TENANT_DETECTION_METHOD=auto  # auto, env, subdomain, config
+      
+      # Performance optimizations for multi-tenant
+      - PERFORMANCE_ENABLE_STREAMING=true
+      - PERFORMANCE_CACHE_EMBEDDINGS=true
+      - PERFORMANCE_MIN_STREAMING_LENGTH=200
+    
+    volumes:
+      - hrbot-data:/app/data
+      - hrbot-logs:/app/logs
+      
+      # Multi-tenant configuration (optional)
+      - ./configs/tenant-config.yml:/app/configs/tenant-config.yml:ro
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3978/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 3G    # Increased for multi-tenant
+          cpus: '1.5'
+        reservations:
+          memory: 768M
+          cpus: '0.5'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "service=hrbot-multi-tenant,mode=multi-tenant,environment=${DEBUG:-production}"
+    
+    networks:
+      - hrbot-network
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    user: "1000:1000"
+
+  # Optional: Nginx for advanced routing and SSL termination
+  nginx:
+    image: nginx:alpine
+    container_name: hrbot-nginx
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    volumes:
+      - ./docker/nginx/nginx-multi-tenant.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+    
+    depends_on:
+      - hrbot
+    
+    networks:
+      - hrbot-network
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3" 
