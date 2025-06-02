@@ -717,6 +717,9 @@ async def debug_chat(req: DebugChatRequest):
     start_time = time.time()
     
     try:
+        # Create a session ID for this debug conversation
+        session_id = session_tracker.get(req.user_id)
+        
         # Get conversation context
         memory = await get_or_create_memory(req.user_id)
         conversation_context = None
@@ -730,6 +733,19 @@ async def debug_chat(req: DebugChatRequest):
             user_message=req.text,
             conversation_context=conversation_context,
             response_type="standard"
+        )
+        
+        # Save user message to database
+        user_msg_id = await message_service.add_message(
+            bot_name="hrbot",
+            env="development",
+            channel="debug",  # Using 'debug' channel to distinguish from teams
+            user_id=req.user_id,
+            session_id=session_id,
+            role="user",
+            text=req.text,
+            intent=None,
+            reply_to_id=None,
         )
         
         # Get AI response
@@ -748,6 +764,19 @@ async def debug_chat(req: DebugChatRequest):
             memory.add_user_message(req.text)
             memory.add_ai_message(bot_response)
             
+            # Save bot response to database
+            await message_service.add_message(
+                bot_name="hrbot",
+                env="development", 
+                channel="debug",
+                user_id=req.user_id,
+                session_id=session_id,
+                role="bot",
+                text=bot_response,
+                intent=classification_service.get_message_intent(analysis),
+                reply_to_id=user_msg_id,
+            )
+            
             return DebugChatResponse(
                 user_message=req.text,
                 bot_response=bot_response,
@@ -756,9 +785,26 @@ async def debug_chat(req: DebugChatRequest):
                 processing_time=round(processing_time, 2)
             )
         else:
+            # Even on error, save to memory and database
+            error_response = "Sorry, I encountered an error processing your request."
+            memory.add_user_message(req.text)
+            memory.add_ai_message(error_response)
+            
+            await message_service.add_message(
+                bot_name="hrbot",
+                env="development",
+                channel="debug", 
+                user_id=req.user_id,
+                session_id=session_id,
+                role="bot",
+                text=error_response,
+                intent="error",
+                reply_to_id=user_msg_id,
+            )
+            
             return DebugChatResponse(
                 user_message=req.text,
-                bot_response="Sorry, I encountered an error processing your request.",
+                bot_response=error_response,
                 conversation_flow="error",
                 confidence=0.0,
                 processing_time=round(processing_time, 2)
