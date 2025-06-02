@@ -15,6 +15,8 @@ from hrbot.utils.noi import NOIAccessChecker
 from hrbot.services.content_classification_service import ConversationFlow
 import logging, re
 from datetime import datetime
+from pydantic import BaseModel
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -694,6 +696,84 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             )
             
     return TeamsActivityResponse(text="")
+
+
+# Debug endpoint models and implementation for QA team
+class DebugChatRequest(BaseModel):
+    text: str
+    user_id: str = "debug-user"
+
+class DebugChatResponse(BaseModel):
+    user_message: str
+    bot_response: str
+    conversation_flow: str
+    confidence: float
+    processing_time: float
+
+@router.post("/debug", response_model=DebugChatResponse)
+async def debug_chat(req: DebugChatRequest):
+    """Debug endpoint that returns actual AI response for testing."""
+    import time
+    start_time = time.time()
+    
+    try:
+        # Get conversation context
+        memory = await get_or_create_memory(req.user_id)
+        conversation_context = None
+        if memory.messages:
+            recent_messages = memory.messages[-4:]
+            conversation_context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_messages])
+        
+        # Analyze conversation flow
+        classification_service = get_content_classification_service()
+        analysis = await classification_service.analyze_conversation_flow(
+            user_message=req.text,
+            conversation_context=conversation_context,
+            response_type="standard"
+        )
+        
+        # Get AI response
+        result = await chat_processor.process_message(
+            req.text,
+            chat_history=[m["content"] for m in memory.messages],
+            user_id=req.user_id
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if result.is_success():
+            bot_response = result.unwrap()["response"].strip()
+            
+            # Save to memory for context
+            memory.add_user_message(req.text)
+            memory.add_ai_message(bot_response)
+            
+            return DebugChatResponse(
+                user_message=req.text,
+                bot_response=bot_response,
+                conversation_flow=analysis.flow_type.value,
+                confidence=analysis.confidence,
+                processing_time=round(processing_time, 2)
+            )
+        else:
+            return DebugChatResponse(
+                user_message=req.text,
+                bot_response="Sorry, I encountered an error processing your request.",
+                conversation_flow="error",
+                confidence=0.0,
+                processing_time=round(processing_time, 2)
+            )
+            
+    except Exception as e:
+        logger.error(f"Debug chat error: {e}")
+        processing_time = time.time() - start_time
+        return DebugChatResponse(
+            user_message=req.text,
+            bot_response=f"Error: {str(e)}",
+            conversation_flow="error",
+            confidence=0.0,
+            processing_time=round(processing_time, 2)
+        )
 
 
 def _clear_user_session(user_id: str):
