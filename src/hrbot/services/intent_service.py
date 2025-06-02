@@ -92,12 +92,15 @@ CRITICAL RULES FOR CLASSIFICATION:
 - Says goodbye ("bye", "thanks, goodbye", "that's all, thanks")
 - Confirms they're done ("no, nothing else", "I'm all set", "that's everything")
 - Explicitly declines help ("no thanks", "nothing more", "I'm good")
+- Simply says "no" or "nope" in response to "Is there anything else I can help you with?"
 
 **NEVER END for:**
 - Single words that could be topics/questions (noi, benefits, policy, etc.)
 - Expressions of frustration, resignation, or personal struggles
 - Anything that could be interpreted as seeking help or information
-- Ambiguous responses
+- Ambiguous responses (except for "no" or "nope" as a direct response)
+
+**SPECIAL CASE:** When user responds with just "no" or "nope" to the question "Is there anything else I can help you with?", this should be classified as END because it's a clear, direct answer to the specific question.
 
 **DEFAULT BEHAVIOR:** When in doubt, always choose CONTINUE. It's better to help someone who might not need it than to abandon someone who does.
 
@@ -119,7 +122,8 @@ Your classification:"""
         # Look for explicit reasoning that confirms it's a real ending
         ending_indicators = [
             "GOODBYE", "ALL SET", "NOTHING ELSE", "DONE", "FINISHED",
-            "NO THANKS", "THAT'S ALL", "THANKS BYE", "EXPLICITLY"
+            "NO THANKS", "THAT'S ALL", "THANKS BYE", "EXPLICITLY",
+            "NO", "NOPE", "DIRECT ANSWER", "CLEAR"
         ]
         
         return any(indicator in response for indicator in ending_indicators) 
