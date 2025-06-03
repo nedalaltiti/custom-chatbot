@@ -43,7 +43,7 @@ services:
       # AWS credentials and configuration
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION:-us-west-1}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
       # Let .env.jo file handle AWS secret names
       - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
       - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
@@ -118,7 +118,7 @@ services:
       # AWS credentials and configuration
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION:-us-west-1}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
       # Let .env.us file handle AWS secret names
       - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
       - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
