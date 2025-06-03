@@ -155,16 +155,34 @@ class EmbeddingSettings:
 class TeamsSettings:
     app_id: Optional[str] = None
     app_password: Optional[str] = None
-    tenant_id: Optional[str] = None
+    tenant_id: Optional[str] = None  # Shared Azure AD tenant ID for all app instances
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
 
     @classmethod
     def from_environment(cls) -> "TeamsSettings":
+        # With separate .env files, we now use generic environment variables
+        # The appropriate .env.jo or .env.us file should be loaded based on the instance
+        
+        app_id = get_env_var("APP_ID") or get_env_var("MICROSOFT_APP_ID")
+        app_password = get_env_var("APP_PASSWORD") or get_env_var("MICROSOFT_APP_PASSWORD")
+        
+        try:
+            from hrbot.config.app_config import get_current_app_config
+            app_config = get_current_app_config()
+            logger.info(f"Loading Teams settings for app instance: {app_config.name}")
+        except Exception as e:
+            logger.warning(f"Could not get app config context: {e}")
+        
+        if app_id:
+            logger.info("Using APP_ID from environment")
+        else:
+            logger.warning("No APP_ID found in environment")
+                
         return cls(
-            app_id=get_env_var("MICROSOFT_APP_ID"),
-            app_password=get_env_var("MICROSOFT_APP_PASSWORD"),
-            tenant_id=get_env_var("TENANT_ID"),
+            app_id=app_id,
+            app_password=app_password,
+            tenant_id=get_env_var("TENANT_ID"),  # Same tenant for all app instances
             client_id=get_env_var("CLIENT_ID"),
             client_secret=get_env_var("CLIENT_SECRET"),
         )
@@ -201,14 +219,14 @@ class HRSupportSettings:
     @classmethod
     def from_environment(cls) -> "HRSupportSettings":
         try:
-            from hrbot.config.tenant import get_current_tenant
-            tenant = get_current_tenant()
+            from hrbot.config.app_config import get_current_app_config
+            app_config = get_current_app_config()
             return cls(
-                url=get_env_var("HR_SUPPORT_URL", tenant.hr_support_url),
-                domain=get_env_var("HR_SUPPORT_DOMAIN", tenant.hr_support_url.split("//")[1].split("/")[0]),
+                url=get_env_var("HR_SUPPORT_URL", app_config.hr_support_url),
+                domain=get_env_var("HR_SUPPORT_DOMAIN", app_config.hr_support_url.split("//")[1].split("/")[0]),
             )
         except ImportError:
-            # Fallback if tenant module not available (during initial setup)
+            # Fallback if app config module not available (during initial setup)
             return cls(
                 url=get_env_var("HR_SUPPORT_URL", cls.url),
                 domain=get_env_var("HR_SUPPORT_DOMAIN", cls.domain),
@@ -240,8 +258,8 @@ class PerformanceSettings:
     min_streaming_length: int = 200  # Lowered from 400 to enable streaming for more responses
     show_acknowledgment_threshold: int = 10  # Show "looking into it" for queries > 10 words
     enable_streaming: bool = True  # Enable/disable streaming responses
-    streaming_delay: float = 1.2  # Delay between chunks (Microsoft requires 1+ seconds)
-    max_chunk_size: int = 150  # Maximum characters per chunk for optimal readability
+    streaming_delay: float = 0.8  # Reduced delay for faster streaming (Microsoft minimum)
+    max_chunk_size: int = 120  # Reduced for faster perception
     
     # Semantic similarity settings for HR topic detection
     hr_similarity_threshold: float = 0.55  # Lowered to be less restrictive for HR topics
@@ -250,7 +268,7 @@ class PerformanceSettings:
     # Enhanced document processing settings
     chunk_size: int = 1500  # Increased for more comprehensive chunks
     chunk_overlap: int = 300  # Increased overlap to preserve context
-    max_chunks_per_query: int = 12  # More chunks for comprehensive responses
+    max_chunks_per_query: int = 8  # Reduced for faster retrieval
     enable_table_extraction: bool = True  # Extract tables from PDFs
     enable_structure_preservation: bool = True  # Preserve document structure
     ocr_fallback: bool = False  # Use OCR for scanned documents (requires tesseract)

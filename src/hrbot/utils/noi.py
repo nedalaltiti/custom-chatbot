@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Optional, List
 from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.utils.result import Result, Success, Error
-from hrbot.config.tenant import get_current_tenant, is_feature_enabled
+from hrbot.config.app_config import get_current_app_config, is_feature_enabled
 
 
 logger = logging.getLogger(__name__)
@@ -15,18 +15,18 @@ class NOIAccessChecker:
     Checks if users have access to submit a Notice of Investigation (NOI)
     based on their job title retrieved from Microsoft Graph API.
 
-    This feature is tenant-aware and will be disabled for regions that don't support NOI.
+    This feature is app instance-aware and will be disabled for regions that don't support NOI.
     """
     _MANAGERIAL_KEYWORDS_LOWERCASE: List[str] = ['chief', 'manager', 'supervisor', 'director']
     _NOI_KEYWORDS_LOWERCASE: List[str] = ['noi', 'notice of investigation', 'violation']
     def __init__(self):
         """Initialize the NOI access checker with TeamsAdapter."""
         self.teams_adapter = TeamsAdapter()
-        self.tenant = get_current_tenant()
-        logger.info(f"NOI Access Checker initialized for tenant: {self.tenant.name}")
+        self.app_config = get_current_app_config()
+        logger.info(f"NOI Access Checker initialized for app instance: {self.app_config.name}")
         
-        if not self.tenant.supports_noi:
-            logger.info(f"NOI feature is disabled for tenant: {self.tenant.name}")
+        if not self.app_config.supports_noi:
+            logger.info(f"NOI feature is disabled for app instance: {self.app_config.name}")
 
     def is_managerial_position(self, title: Optional[str]) -> bool:
         """
@@ -78,7 +78,7 @@ class NOIAccessChecker:
     async def check_access(self, user_id: str, job_title: Optional[str] = None) -> Dict:
         """
         Check if a user has access to submit a Notice of Investigation.
-        Returns tenant-aware response - if NOI is disabled for the tenant,
+        Returns app-aware response - if NOI is disabled for the app instance,
         returns appropriate message.
         Args:
             user_id: The user's Azure AD Object ID
@@ -86,16 +86,16 @@ class NOIAccessChecker:
         Returns:
             dict: A response containing the user's job title and access status
         """
-        # Check if NOI feature is enabled for this tenant
-        if not self.tenant.supports_noi:
-            logger.info(f"NOI feature disabled for tenant {self.tenant.name}, user: {user_id}")
+        # Check if NOI feature is enabled for this app instance
+        if not self.app_config.supports_noi:
+            logger.info(f"NOI feature disabled for app instance {self.app_config.name}, user: {user_id}")
             return {
                 'has_access': False,
                 'job_title': job_title or "Unknown",
                 'response': (
-                    f"Notice of Investigation (NOI) is not available for the {self.tenant.name}. "
+                    f"Notice of Investigation (NOI) is not available for the {self.app_config.name}. "
                     f"For any concerns or policy violations, please contact your HR team directly: "
-                    f"{self.tenant.hr_support_url}"
+                    f"{self.app_config.hr_support_url}"
                 ),
                 'feature_disabled': True
             }
@@ -129,13 +129,13 @@ class NOIAccessChecker:
     def is_noi_related(message: str) -> bool:
         """
         Check if a message is related to NOI requests.
-        Only returns True if NOI feature is enabled for the current tenant.
+        Only returns True if NOI feature is enabled for the current app instance.
         Args:
             message: The message to check
         Returns:
             bool: True if the message is NOI-related and feature is enabled, False otherwise
         """
-        # First check if NOI feature is enabled for current tenant
+        # First check if NOI feature is enabled for current app instance
         if not is_feature_enabled("noi"):
             return False
             

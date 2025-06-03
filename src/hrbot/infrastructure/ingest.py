@@ -2,7 +2,7 @@
 """
 Auto-ingest helper
 ──────────────────
-Scan `data/knowledge/`, embed any *new* files, and persist them.
+Scan app-specific knowledge directory, embed any *new* files, and persist them.
 
 • Skips files that are already present in the VectorStore
   (we compare absolute file paths stored in metadata).
@@ -16,13 +16,19 @@ from pathlib import Path
 
 from hrbot.core.chunking import process_document            
 from hrbot.infrastructure.vector_store import VectorStore
+from hrbot.config.app_config import get_current_app_config
 
 logger = logging.getLogger(__name__)
-KNOWLEDGE_DIR = Path("data/knowledge")
 
 async def refresh_vector_index(store: VectorStore) -> int:
-    if not KNOWLEDGE_DIR.exists():
-        logger.warning("Knowledge dir %s does not exist", KNOWLEDGE_DIR)
+    # Get app-specific knowledge directory
+    app_config = get_current_app_config()
+    knowledge_dir = app_config.knowledge_base_dir
+    
+    logger.info(f"Refreshing vector index from: {knowledge_dir}")
+    
+    if not knowledge_dir.exists():
+        logger.warning("Knowledge dir %s does not exist", knowledge_dir)
         return 0
 
     already_indexed = {
@@ -30,11 +36,12 @@ async def refresh_vector_index(store: VectorStore) -> int:
     }
 
     new_files = [
-        fp for fp in KNOWLEDGE_DIR.glob("*")
+        fp for fp in knowledge_dir.glob("*")
         if fp.is_file() and str(fp.resolve()) not in already_indexed
     ]
 
     if not new_files:
+        logger.info(f"No new files to index in {knowledge_dir}")
         return 0
 
     chunks = []
@@ -44,6 +51,7 @@ async def refresh_vector_index(store: VectorStore) -> int:
 
     if chunks:
         await store.add_documents(chunks)
-        logger.info("Embedded %d new docs (%d chunks)", len(new_files), len(chunks))
+        logger.info("Embedded %d new docs (%d chunks) for app instance: %s", 
+                   len(new_files), len(chunks), app_config.instance_id)
 
     return len(new_files)

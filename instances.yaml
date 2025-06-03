@@ -1,0 +1,33 @@
+instances:
+  jo:
+    name: "Jo HR Assistant"
+    supports_noi: true
+    hr_support_url: "https://hrsupport.usclarity.com/support/home"
+    hostname_patterns:
+      - "hr-chatbot-jo-*"
+      - "*-jo-*"
+    default: true
+
+  us:
+    name: "US HR Assistant" 
+    supports_noi: false
+    hr_support_url: "https://hrsupport.usclarity.com/support/home"
+    hostname_patterns:
+      - "hr-chatbot-us-*"
+      - "*-us-*"
+    default: false
+
+  # Example: Adding new regions is just configuration
+  # DR:
+  #   name: "DR HR Assistant"
+  #   supports_noi: false
+  #   hr_support_url: "https://hrsupport.usclarity.com/support/home"
+  #   hostname_patterns:
+  #     - "hr-chatbot-DR-*"
+  #     - "*-DR-*"
+  #   default: false
+  #
+
+global_settings:
+  data_base_dir: "data"
+  auto_create_directories: true 

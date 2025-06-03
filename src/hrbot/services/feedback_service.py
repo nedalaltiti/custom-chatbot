@@ -12,6 +12,7 @@ from hrbot.infrastructure.cards import create_feedback_card
 from sqlalchemy.exc import SQLAlchemyError
 from hrbot.db.models import Rating
 from hrbot.db.session import get_db_session_context
+from hrbot.utils.bot_name import get_bot_name
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ class FeedbackService:
         rating: int,
         comment: str = "",
         session_id: str | None = None,
-        bot_name: str = "hrbot",
+        bot_name: str = None,
         env: str = "development",
         channel: str = "teams",
         conversation_id: str | None = None,
@@ -219,6 +220,10 @@ class FeedbackService:
         utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         try:
             async with get_db_session_context() as session:
+                # Use app-aware bot name if not provided
+                if bot_name is None:
+                    bot_name = get_bot_name()
+                    
                 row = Rating(
                     bot_name        = bot_name,
                     env             = env,
