@@ -12,7 +12,7 @@ pipelines:
             - echo "Logging into AWS ECR..."
             - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
             - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-            - export AWS_REGION=$AWS_DEFAULT_REGION
+            - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
             - docker build --no-cache -t $IMAGE_FULL_PROD .
@@ -46,7 +46,7 @@ pipelines:
             - echo "Logging into AWS ECR..."
             - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
             - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-            - export AWS_REGION=$AWS_DEFAULT_REGION
+            - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
             - docker build --no-cache -t $IMAGE_FULL_STG .
@@ -80,7 +80,7 @@ pipelines:
             - echo "Logging into AWS ECR..."
             - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
             - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-            - export AWS_REGION=$AWS_DEFAULT_REGION
+            - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
             - docker build --no-cache -t $IMAGE_FULL_DEV .
