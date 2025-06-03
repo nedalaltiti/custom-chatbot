@@ -13,6 +13,7 @@ import asyncio
 import os
 from typing import List, Dict, AsyncGenerator
 import time
+import random
 
 # Google Generative AI imports
 import google.generativeai as genai  # Used when API-key flow is chosen
@@ -82,7 +83,7 @@ class GeminiService:
 
     async def analyze_messages(self, messages: List[str]) -> Result[Dict]:
         """
-        Analyze a batch of chat messages (or questions) using Gemini.
+        Analyze a batch of chat messages (or questions) using Gemini with retry logic.
         
         Args:
             messages: List of message strings (last one is the current query)
@@ -97,69 +98,104 @@ class GeminiService:
                 user_message="I need a question to answer."
             ))
         
-        try:
-            # Ensure model is available
-            self._ensure_model()
+        # Retry logic for network resilience
+        max_retries = 3
+        base_delay = 0.5
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Ensure model is available
+                self._ensure_model()
 
-            # Get the last message as the current query
-            current_message = messages[-1]
-            
-            # Get previous messages as history
-            history = messages[:-1] if len(messages) > 1 else []
-            
-            model = self._model
+                # Get the last message as the current query
+                current_message = messages[-1]
+                
+                # Get previous messages as history
+                history = messages[:-1] if len(messages) > 1 else []
+                
+                model = self._model
 
-            # Use Vertex AI - simply concatenate history + current message
-            prompt = "\n".join(history + [current_message]) if history else current_message
-            
-            response = await asyncio.to_thread(
-                model.generate_content,
-                prompt,
-                generation_config=self.generation_config,
-                safety_settings=self.safety_settings,
-            )
-            response_text = response.text
-            
-            # Return successful result
-            return Success({
-                "response": response_text,
-                "model": self.model_name,
-                "prompt_tokens": getattr(response, "prompt_token_count", 0),
-                "completion_tokens": getattr(response, "candidate_token_count", 0)
-            })
-            
-        except google_auth_exceptions.DefaultCredentialsError as e:
-            logger.error(f"Authentication error with Gemini: {str(e)}")
-            return Error(LLMError(
-                code=ErrorCode.INVALID_CREDENTIALS,
-                message=f"Authentication error with Gemini: {str(e)}",
-                user_message="There was an issue with AI system authentication."
-            ))
-        except google_api_exceptions.ResourceExhausted as e:
-            logger.error(f"Resource exhaustion error with Gemini: {str(e)}")
-            return Error(LLMError(
-                code=ErrorCode.TOKEN_LIMIT_EXCEEDED,
-                message=f"Token limit exceeded with Gemini: {str(e)}",
-                user_message="Your query is too complex for me to process right now."
-            ))
-        except google_api_exceptions.InvalidArgument as e:
-            logger.error(f"Invalid argument error with Gemini: {str(e)}")
-            return Error(LLMError(
-                code=ErrorCode.PROMPT_TOO_LONG,
-                message=f"Invalid argument: {str(e)}",
-                user_message="I couldn't process your request due to input constraints."
-            ))
-        except Exception as e:
-            logger.error(f"Error analyzing messages with Gemini: {str(e)}")
-            return Error(LLMError(
-                code=ErrorCode.LLM_UNAVAILABLE,
-                message=f"Error analyzing messages with Gemini: {str(e)}",
-                user_message="I'm having trouble processing your request right now."
-            ))
+                # Use Vertex AI - simply concatenate history + current message
+                prompt = "\n".join(history + [current_message]) if history else current_message
+                
+                response = await asyncio.to_thread(
+                    model.generate_content,
+                    prompt,
+                    generation_config=self.generation_config,
+                    safety_settings=self.safety_settings,
+                )
+                response_text = response.text
+                
+                # Return successful result
+                return Success({
+                    "response": response_text,
+                    "model": self.model_name,
+                    "prompt_tokens": getattr(response, "prompt_token_count", 0),
+                    "completion_tokens": getattr(response, "candidate_token_count", 0)
+                })
+                
+            except google_auth_exceptions.DefaultCredentialsError as e:
+                logger.error(f"Authentication error with Gemini: {str(e)}")
+                return Error(LLMError(
+                    code=ErrorCode.INVALID_CREDENTIALS,
+                    message=f"Authentication error with Gemini: {str(e)}",
+                    user_message="There was an issue with AI system authentication."
+                ))
+            except google_api_exceptions.ResourceExhausted as e:
+                logger.error(f"Resource exhaustion error with Gemini: {str(e)}")
+                return Error(LLMError(
+                    code=ErrorCode.TOKEN_LIMIT_EXCEEDED,
+                    message=f"Token limit exceeded with Gemini: {str(e)}",
+                    user_message="Your query is too complex for me to process right now."
+                ))
+            except google_api_exceptions.InvalidArgument as e:
+                logger.error(f"Invalid argument error with Gemini: {str(e)}")
+                return Error(LLMError(
+                    code=ErrorCode.PROMPT_TOO_LONG,
+                    message=f"Invalid argument: {str(e)}",
+                    user_message="I couldn't process your request due to input constraints."
+                ))
+            except (google_api_exceptions.ServiceUnavailable,
+                    google_api_exceptions.DeadlineExceeded,
+                    ConnectionError,
+                    OSError) as e:
+                # Network-related errors - retry with backoff
+                logger.warning(f"Network error on attempt {attempt}/{max_retries}: {str(e)}")
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0.1, 0.3)
+                    logger.info(f"Retrying in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Network error after {max_retries} attempts: {str(e)}")
+                    return Error(LLMError(
+                        code=ErrorCode.LLM_UNAVAILABLE,
+                        message=f"Network connectivity issues with Gemini: {str(e)}",
+                        user_message="I'm having trouble connecting to the AI service right now. Please try again in a moment."
+                    ))
+            except Exception as e:
+                logger.error(f"Error analyzing messages with Gemini on attempt {attempt}: {str(e)}")
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    return Error(LLMError(
+                        code=ErrorCode.LLM_UNAVAILABLE,
+                        message=f"Error analyzing messages with Gemini: {str(e)}",
+                        user_message="I'm having trouble processing your request right now."
+                    ))
+        
+        # This should never be reached due to the loop structure
+        return Error(LLMError(
+            code=ErrorCode.LLM_UNAVAILABLE,
+            message="Unexpected error in retry logic",
+            user_message="I'm having trouble processing your request right now."
+        ))
     
     async def analyze_messages_streaming(self, messages: List[str]) -> AsyncGenerator[str, None]:
         """
-        Analyze messages with streaming response.
+        Analyze messages with streaming response and retry logic.
         
         Args:
             messages: List of message strings
@@ -171,36 +207,66 @@ class GeminiService:
             yield "I need a question to answer."
             return
         
-        try:
-            # Ensure model is available
-            self._ensure_model()
+        max_retries = 2  # Fewer retries for streaming to avoid long delays
+        base_delay = 0.5
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Ensure model is available
+                self._ensure_model()
 
-            # Get the last message as the current query
-            current_message = messages[-1]
-            
-            # Get previous messages as history
-            history = messages[:-1] if len(messages) > 1 else []
-            
-            model = self._model
-
-            prompt = "\n".join(history + [current_message]) if history else current_message
-            
-            # Vertex AI streaming
-            response = await asyncio.to_thread(
-                model.generate_content,
-                prompt,
-                generation_config=self.generation_config,
-                safety_settings=self.safety_settings,
-                stream=True,
-            )
-            
-            for chunk in response:
-                if hasattr(chunk, "text") and chunk.text:
-                    yield chunk.text
+                # Get the last message as the current query
+                current_message = messages[-1]
                 
-        except Exception as e:
-            logger.error(f"Error in streaming response: {str(e)}")
-            yield f"I'm having trouble processing your request right now: {str(e)}"
+                # Get previous messages as history
+                history = messages[:-1] if len(messages) > 1 else []
+                
+                model = self._model
+
+                prompt = "\n".join(history + [current_message]) if history else current_message
+                
+                # Vertex AI streaming
+                response = await asyncio.to_thread(
+                    model.generate_content,
+                    prompt,
+                    generation_config=self.generation_config,
+                    safety_settings=self.safety_settings,
+                    stream=True,
+                )
+                
+                chunk_count = 0
+                for chunk in response:
+                    if hasattr(chunk, "text") and chunk.text:
+                        chunk_count += 1
+                        yield chunk.text
+                
+                # If we got here, streaming was successful
+                if chunk_count > 0:
+                    logger.debug(f"Streaming completed successfully with {chunk_count} chunks")
+                return
+                
+            except (google_api_exceptions.ServiceUnavailable,
+                    google_api_exceptions.DeadlineExceeded,
+                    ConnectionError,
+                    OSError) as e:
+                logger.warning(f"Streaming network error on attempt {attempt}/{max_retries}: {str(e)}")
+                if attempt < max_retries:
+                    delay = base_delay * attempt + random.uniform(0.1, 0.2)
+                    logger.info(f"Retrying streaming in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    yield f"I'm having trouble connecting to the AI service right now. Please try your request again."
+                    return
+            except Exception as e:
+                logger.error(f"Error in streaming response on attempt {attempt}: {str(e)}")
+                if attempt < max_retries:
+                    delay = base_delay * attempt
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    yield f"I'm having trouble processing your request right now: {str(e)}"
+                    return
     
     async def test_connection(self) -> bool:
         """
@@ -221,8 +287,8 @@ class GeminiService:
     # Internal helpers
     # ---------------------------------------------------------------------
 
-    def _ensure_model(self, retries: int = 3):
-        """Lazily create the GenerativeModel with simple exponential back-off."""
+    def _ensure_model(self, retries: int = 5):  # Increased retries
+        """Lazily create the GenerativeModel with enhanced exponential back-off and network resilience."""
         if self._model is not None:
             return
 
@@ -261,7 +327,7 @@ class GeminiService:
                 if not project_id:
                     raise ValueError("GOOGLE_CLOUD_PROJECT not set")
                 
-                logger.info(f"Initializing Vertex AI with project: {project_id}, location: {location}")
+                logger.info(f"Initializing Vertex AI with project: {project_id}, location: {location} (attempt {attempt})")
                 aiplatform.init(project=project_id, location=location)
                 self._model = GenerativeModel(model_name=self.model_name)
                 self.use_vertex = True
@@ -280,6 +346,29 @@ class GeminiService:
                 logger.info("Gemini model initialized with Vertex AI on attempt %d", attempt)
                 return
                 
+            except (google_auth_exceptions.DefaultCredentialsError, 
+                    google_api_exceptions.Unauthenticated) as e:
+                # Don't retry auth errors
+                logger.error(f"Authentication error on attempt {attempt}: {e}")
+                raise LLMError(
+                    code=ErrorCode.INVALID_CREDENTIALS,
+                    message=f"Authentication failed: {e}",
+                    cause=e
+                )
+            except (google_api_exceptions.ServiceUnavailable,
+                    google_api_exceptions.DeadlineExceeded,
+                    ConnectionError,
+                    OSError) as e:
+                # Retry network-related errors
+                last_err = e
+                logger.warning(f"Network error on attempt {attempt}/{retries}: {e}")
+                if attempt < retries:
+                    # Exponential backoff with jitter for network issues
+                    jitter = random.uniform(0.1, 0.5)
+                    sleep_time = delay + jitter
+                    logger.info(f"Retrying in {sleep_time:.1f}s...")
+                    time.sleep(sleep_time)
+                    delay *= 1.5  # Slower backoff for network issues
             except Exception as e:
                 last_err = e
                 logger.warning(f"Gemini init attempt {attempt} failed: {e}")
@@ -290,6 +379,6 @@ class GeminiService:
         # After retries
         raise LLMError(
             code=ErrorCode.INITIALIZATION_ERROR, 
-            message=f"Failed to initialize Gemini after {retries} attempts", 
+            message=f"Failed to initialize Gemini after {retries} attempts. Last error: {last_err}", 
             cause=last_err
         )

@@ -1,11 +1,11 @@
 """
-Unified document-processing & chunking layer for the RAG pipeline with multi-tenant support
+Unified document-processing & chunking layer for the RAG pipeline with multi-app support
 ─────────────────────────────────────────────────────────────────
 • Advanced text extraction (PDF, DOCX, TXT, etc.)                 – non-blocking
 • Configurable, sentence-aware chunking with overlap              – ChunkingConfig
 • Rich metadata (hash, word/char count, page numbers, …)
 • Async-safe helpers: save_uploaded_file(), reload_knowledge_base(), get_relevant_chunks()
-• Multi-tenant support with tenant-specific knowledge bases
+• Multi-app support with app instance-specific knowledge bases
 """
 
 from __future__ import annotations
@@ -23,20 +23,12 @@ import aiofiles  # Add this import for async file operations
 import pdfplumber
 
 from hrbot.config.settings import settings
-from hrbot.config.tenant import get_current_tenant
+from hrbot.config.app_config import get_current_app_config, get_instance_manager
 from hrbot.core.document import Document
 from hrbot.infrastructure.vector_store import VectorStore
+from hrbot.utils.di import get_vector_store  # Import the app-aware version
 
 logger = logging.getLogger(__name__)
-
-_vector_store: Optional[VectorStore] = None
-
-
-def get_vector_store() -> VectorStore:
-    global _vector_store
-    if _vector_store is None:
-        _vector_store = VectorStore()
-    return _vector_store
 
 class ChunkingConfig:
     def __init__(
@@ -573,24 +565,26 @@ async def get_relevant_chunks(query: str, top_k: int = 5) -> List[Document]:
     store = get_vector_store()
     return await store.similarity_search(query, top_k=top_k)
 
-async def save_uploaded_file(file, tenant_region: str = None) -> str:
+async def save_uploaded_file(file, app_instance: str = None) -> str:
     """
-    Save uploaded file to tenant-specific knowledge base directory using async I/O.
+    Save uploaded file to app instance-specific knowledge base directory using async I/O.
     
     Args:
         file: The uploaded file
-        tenant_region: Optional tenant region, uses current tenant if not provided
+        app_instance: Optional app instance name, uses current app if not provided
         
     Returns:
         Path to the saved file
     """
-    if tenant_region:
-        from hrbot.config.tenant import TENANT_CONFIGS, TenantRegion
-        tenant = TENANT_CONFIGS[TenantRegion(tenant_region)]
+    if app_instance:
+        manager = get_instance_manager()
+        app_config = manager.get_instance(app_instance)
+        if not app_config:
+            raise ValueError(f"Invalid app instance: {app_instance}")
     else:
-        tenant = get_current_tenant()
+        app_config = get_current_app_config()
     
-    knowledge_dir = tenant.knowledge_base_dir
+    knowledge_dir = app_config.knowledge_base_dir
     knowledge_dir.mkdir(parents=True, exist_ok=True)
     
     dst = knowledge_dir / file.filename
@@ -600,30 +594,32 @@ async def save_uploaded_file(file, tenant_region: str = None) -> str:
     async with aiofiles.open(dst, mode='wb') as f:
         await f.write(file_content)
         
-    logger.info("Saved file → %s for tenant %s", dst, tenant.name)
+    logger.info("Saved file → %s for app instance %s", dst, app_config.name)
     return str(dst)
 
-async def reload_knowledge_base_concurrent(cfg: ChunkingConfig | None = None, concurrency: int = 4, tenant_region: str = None) -> int:
+async def reload_knowledge_base_concurrent(cfg: ChunkingConfig | None = None, concurrency: int = 4, app_instance: str = None) -> int:
     """
     High-performance concurrent knowledge base reloading with optimized I/O.
     
     Args:
         cfg: Chunking configuration
         concurrency: Number of concurrent file processing tasks
-        tenant_region: Optional tenant region, uses current tenant if not provided
+        app_instance: Optional app instance name, uses current app if not provided
         
     Returns:
         Number of files processed.
     """
-    if tenant_region:
-        from hrbot.config.tenant import TENANT_CONFIGS, TenantRegion
-        tenant = TENANT_CONFIGS[TenantRegion(tenant_region)]
+    if app_instance:
+        manager = get_instance_manager()
+        app_config = manager.get_instance(app_instance)
+        if not app_config:
+            raise ValueError(f"Invalid app instance: {app_instance}")
     else:
-        tenant = get_current_tenant()
+        app_config = get_current_app_config()
     
-    knowledge_dir = tenant.knowledge_base_dir
+    knowledge_dir = app_config.knowledge_base_dir
     if not knowledge_dir.exists():
-        logger.warning(f"Knowledge base directory does not exist for tenant {tenant.name}: {knowledge_dir}")
+        logger.warning(f"Knowledge base directory does not exist for app instance {app_config.name}: {knowledge_dir}")
         return 0
 
     store = get_vector_store()
@@ -636,7 +632,7 @@ async def reload_knowledge_base_concurrent(cfg: ChunkingConfig | None = None, co
     # Use optimized semaphore for concurrency control
     sem = asyncio.Semaphore(concurrency)
     
-    logger.info(f"Reloading knowledge base for tenant {tenant.name} from {knowledge_dir} ({len(files)} files)")
+    logger.info(f"Reloading knowledge base for app instance {app_config.name} from {knowledge_dir} ({len(files)} files)")
 
     async def _optimized_worker(p: Path):
         async with sem:
@@ -644,7 +640,7 @@ async def reload_knowledge_base_concurrent(cfg: ChunkingConfig | None = None, co
                 return await process_document(str(p), cfg)
             except Exception as e:
                 logger.error(f"Error processing {p.name}: {e}")
-    return []
+                return []
 
     # Process files with progress tracking
     start_time = asyncio.get_event_loop().time()
@@ -667,18 +663,18 @@ async def reload_knowledge_base_concurrent(cfg: ChunkingConfig | None = None, co
         await store.add_documents(all_chunks)
     
     processing_time = asyncio.get_event_loop().time() - start_time
-    logger.info(f"Completed knowledge base reload for tenant {tenant.name}: {successful_files}/{len(files)} files successful, {len(all_chunks)} chunks in {processing_time:.2f}s")
+    logger.info(f"Completed knowledge base reload for app instance {app_config.name}: {successful_files}/{len(files)} files successful, {len(all_chunks)} chunks in {processing_time:.2f}s")
     return len(files)
 
 
 # Backward compatibility - calls the optimized version
-async def reload_knowledge_base(cfg: ChunkingConfig | None = None, concurrency: int = 4, tenant_region: str = None) -> int:
+async def reload_knowledge_base(cfg: ChunkingConfig | None = None, concurrency: int = 4, app_instance: str = None) -> int:
     """
     Backward compatibility wrapper for reload_knowledge_base_concurrent.
     
     This maintains API compatibility while using the optimized implementation.
     """
-    return await reload_knowledge_base_concurrent(cfg, concurrency, tenant_region)
+    return await reload_knowledge_base_concurrent(cfg, concurrency, app_instance)
 
 # Set the DOCX extractor that was missing
 EXTRACTORS[".docx"] = _extract_text_docx

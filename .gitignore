@@ -136,6 +136,18 @@ ENV/
 env.bak/
 venv.bak/
 
+.env
+.env.local
+.env.jordan
+.env.jo
+.env.us
+.env.production
+.env.staging
+.env.development
+
+# Keep example file
+!.env.example
+
 # Spyder project settings
 .spyderproject
 .spyproject

@@ -73,6 +73,45 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize LLM service in background to reduce first-request latency
     asyncio.create_task(_warmup_services())
 
+    # Log current app instance
+    try:
+        from hrbot.config.app_config import get_current_app_config, detect_app_instance_from_hostname, detect_app_instance_from_env
+        
+        # Show detection methods
+        hostname_instance = detect_app_instance_from_hostname()
+        env_instance = detect_app_instance_from_env()
+        
+        logger.info("App Instance Detection:")
+        logger.info(f"   • Hostname detection: {hostname_instance if hostname_instance else 'None'}")
+        logger.info(f"   • Environment variable: {env_instance if env_instance else 'None'}")
+        
+        # Show current hostname for debugging
+        hostname = (
+            os.environ.get("HOSTNAME") or
+            os.environ.get("HOST") or
+            os.environ.get("SERVER_NAME") or
+            os.environ.get("INGRESS_HOST")
+        )
+        if hostname:
+            logger.info(f"   • Current hostname: {hostname}")
+        
+        # Get final configuration
+        app_config = get_current_app_config()
+        logger.info(f"Using app instance: {app_config.instance_id} ({app_config.name})")
+        logger.info(f"Knowledge base: {app_config.knowledge_base_dir}")
+        logger.info(f"Embeddings: {app_config.embeddings_dir}")
+        logger.info(f"Prompts: {app_config.prompt_dir}")
+        logger.info(f"Features: NOI={app_config.supports_noi}")
+        
+        # Show Teams app configuration
+        teams_settings = settings.teams
+        if teams_settings.app_id:
+            logger.info(f"🤖 Teams App ID: {teams_settings.app_id[:8]}...{teams_settings.app_id[-8:] if len(teams_settings.app_id) > 16 else teams_settings.app_id}")
+        
+    except Exception as e:
+        logger.error(f"Error during app instance detection: {e}")
+        logger.info("Continuing with default configuration")
+
     logger.info("✅  Startup complete")
     try:
         yield
@@ -137,7 +176,6 @@ if settings.cors_origins:   # don't enable CORS unless explicitly configured
 
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
-# app.include_router(teams.router,  prefix="/api", tags=["teams"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(admin.router,  prefix="/admin", tags=["admin"])
 
