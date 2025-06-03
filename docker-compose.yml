@@ -72,9 +72,13 @@ services:
       - PYTHONPATH=/app/src
       - HOST=0.0.0.0
       - PORT=3978
+      # AWS credentials and configuration
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      - AWS_REGION=${AWS_REGION:-us-west-1}
+      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
     
     volumes:
       - hrbot-data:/app/data
@@ -140,9 +144,13 @@ services:
       - PYTHONPATH=/app/src
       - HOST=0.0.0.0
       - PORT=3979
+      # AWS credentials and configuration
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      - AWS_REGION=${AWS_REGION:-us-west-1}
+      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
       
     volumes:
       - hrbot-data:/app/data
