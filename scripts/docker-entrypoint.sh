@@ -4,9 +4,7 @@ set -e
 INSTANCE=${APP_INSTANCE:-jo}
 PORT=${PORT:-3978}
 HOST=${HOST:-postgres}
-PORT
-=${PORT
-:-5432}
+PORT=${PORT:-5432}
 
 # Auto-skip when running in CI *or* when DB creds come from AWS Secrets (external RDS)
 if [ "${CI:-false}" = "true" ] || [ "${USE_AWS_SECRETS:-false}" = "true" ]; then
