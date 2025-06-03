@@ -12,6 +12,7 @@ from hrbot.utils.di import get_intent_service, get_content_classification_servic
 from hrbot.services.session_tracker import session_tracker 
 from hrbot.utils.message import split_greeting, is_pure_greeting
 from hrbot.utils.noi import NOIAccessChecker
+from hrbot.utils.bot_name import get_bot_name
 from hrbot.services.content_classification_service import ConversationFlow
 import logging, re
 from datetime import datetime
@@ -98,7 +99,7 @@ async def _ensure_user_message_saved(user_message: str, user_id: str, session_id
     
     # Save to database
     user_msg_id = await message_service.add_message(
-        bot_name   = "hrbot",
+        bot_name   = get_bot_name(),
         env        = "development",
         channel    = "teams",
         user_id    = user_id,
@@ -132,6 +133,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     
     state = user_states.get(user_id)
     if state is None:                        # first ever message from this user
+        logger.info(f"Creating new session for user {user_id} - first message ever")
         state = {
             "awaiting_more_help": False,     # Waiting for yes/no to "anything else?"
             "awaiting_feedback":  False,
@@ -140,15 +142,26 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             "session_id":         session_tracker.get(user_id),
             "greeting_shown":     False,     # Track if greeting card has been shown in this session   
             "last_bot_response_time": None,  # Track when bot last responded
+            "session_started":    True,      # Mark this as a new session start
         }
         user_states[user_id] = state          
         first_time_users.add(user_id)
+        logger.info(f"Added user {user_id} to first_time_users set")
     else:
-        # If the previous session was ended, rebuild essentials
+        # If the previous session was ended, rebuild essentials for new session
         if "session_id" not in state:
+            logger.info(f"Rebuilding session for returning user {user_id} - session was cleared, this is a NEW session")
             state["session_id"] = session_tracker.get(user_id)
             # Clear any residual memory from previous session to prevent context pollution
             user_memories.pop(user_id, None)
+            # Reset greeting shown flag for new session - this is key!
+            state["greeting_shown"] = False
+            state["session_started"] = True  # Mark this as a new session start
+            logger.info(f"Reset greeting_shown=False for user {user_id} - new session after previous ended")
+        else:
+            # Continuing existing session
+            state.setdefault("session_started", False)
+            
         state.setdefault("awaiting_more_help", False)
         state.setdefault("awaiting_feedback", False)
         state.setdefault("feedback_shown", False)
@@ -442,38 +455,60 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
 
     # Show greeting card for first-time users if ANY greeting is detected
     if (greet_only or user_payload) and not state.get("awaiting_more_help"):
-        if user_id in first_time_users and not state.get("greeting_shown", False):
-            # Show welcome card for first-time users
+        # Check if we should show greeting card:
+        # 1. First-time user (in first_time_users set) - always show
+        # 2. OR returning user starting a new session (greeting_shown=False AND it's a greeting)
+        is_first_time = user_id in first_time_users
+        is_new_session_greeting = not state.get("greeting_shown", False)
+        
+        should_show_greeting = is_first_time or is_new_session_greeting
+        
+        logger.info(f"Greeting logic for user {user_id}: is_first_time={is_first_time}, is_new_session_greeting={is_new_session_greeting}, should_show_greeting={should_show_greeting}")
+        
+        if should_show_greeting:
+            # Show welcome card ONLY once per session
+            logger.info(f"Showing welcome card to user {user_id} (first_time={is_first_time}, new_session={is_new_session_greeting})")
             card = create_welcome_card(user_name=user_name)
             await adapter.send_card(service_url, conv_id, card)
-            first_time_users.remove(user_id)
-            state["greeting_shown"] = True  # Mark greeting as shown for this session
+            
+            # IMPORTANT: Mark greeting as shown immediately to prevent duplicates
+            state["greeting_shown"] = True
+            state["session_started"] = False  # Session officially started now
+            
+            # Remove from first_time_users if present
+            first_time_users.discard(user_id)
             
             # If there was additional content after greeting, process it
             if user_payload:
                 user_message = user_payload.strip()
+                logger.info(f"Processing additional content after greeting: '{user_message}'")
                 # Show typing indicator for processing the question
                 await adapter.send_typing(service_url, conv_id)
                 # Continue processing the question below...
             else:
                 # Just greeting, record it and return
+                logger.info(f"Pure greeting processed for user {user_id}, ending request")
                 await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
                 return TeamsActivityResponse(text="")
         else:
-            # Returning user with greeting
+            # User has already seen greeting in this session
+            logger.info(f"User {user_id} already saw greeting in this session (greeting_shown={state.get('greeting_shown')})")
             if user_payload:
                 # Greeting + question - process the question
                 user_message = user_payload.strip()
+                logger.info(f"Processing question from repeat greeting: '{user_message}'")
                 # Show typing indicator for processing the question
                 await adapter.send_typing(service_url, conv_id)
                 # Continue processing the question below...
             elif is_only_greeting:
-                # Pure greeting only (hi, hiiii, heyy, etc.) - just acknowledge without helper text
-                logger.info(f"Pure greeting detected for returning user {user_id}: '{user_message}' - no helper message")
+                # Pure greeting in same session - give a friendly response without card
+                logger.info(f"Returning user greeting again in same session: '{user_message}' - sending simple response")
                 await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
+                await adapter.send_message(service_url, conv_id, "Hello again! How can I help you today?")
                 return TeamsActivityResponse(text="")
             else:
                 # Not a pure greeting but detected as greeting - send helper message
+                logger.info(f"Ambiguous greeting in same session: '{user_message}' - sending helper response")
                 await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
                 await adapter.send_message(service_url, conv_id, "I am here to assist with your inquiries. How can I help you today?")
                 return TeamsActivityResponse(text="")
@@ -493,7 +528,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             memory.add_ai_message(noi_response)
             user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
             background_tasks.add_task(message_service.add_message,
-                                      bot_name="hrbot", env="development", channel="teams", user_id=user_id,
+                                      bot_name=get_bot_name(), env="development", channel="teams", user_id=user_id,
                                       session_id=session_id, role="bot", text=noi_response, intent="informational",
                                       reply_to_id=user_msg_id)
 
@@ -558,7 +593,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     async def _persist_bot_msg(reply_id: int, text: str, intent: str = "CONTINUE") -> None:
         try:
             await message_service.add_message(
-                bot_name   = "hrbot",
+                bot_name   = get_bot_name(),
                 env        = "development",
                 channel    = "teams",
                 user_id    = user_id,
@@ -697,12 +732,16 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
 
 
 def _clear_user_session(user_id: str):
-    """Clear per-user memory, state, and feedback tracking."""
+    """Clear per-user memory, state, and feedback tracking.
+    
+    This completely resets the user's session so that their next message
+    will be treated as starting a new session.
+    """
     
     # Clear in-memory conversation data
     mem = user_memories.pop(user_id, None)
-    user_states.pop(user_id, None)
-    first_time_users.discard(user_id)
+    old_state = user_states.pop(user_id, None)  # This is the key - removes session_id 
+    first_time_users.discard(user_id)  # They're no longer "first time" but can get greeting cards in new sessions
     
     # Clear feedback cards tracking for this user's conversations
     feedback_cards.pop(user_id, None)
@@ -710,6 +749,14 @@ def _clear_user_session(user_id: str):
     # Clear feedback service session data
     feedback_service.clear_user_session(user_id)
     
-    # Log session cleanup
+    # Log detailed session cleanup for debugging
     message_count = len(mem.messages) if mem and mem.messages else 0
-    logger.info(f"Cleared session for user {user_id} (had {message_count} messages in memory)")
+    had_greeting = old_state.get("greeting_shown", False) if old_state else False
+    logger.info(f"🧹 CLEARED session for user {user_id}:")
+    logger.info(f"   • {message_count} messages in memory")
+    logger.info(f"   • greeting_shown was: {had_greeting}")
+    logger.info(f"   • Next greeting will trigger NEW SESSION and greeting card")
+    logger.info(f"   • Removed from first_time_users: {user_id in first_time_users}")
+    
+    # Ensure the user is completely removed from session tracking so next message starts fresh
+    # This makes the next message go through the "state is None" or "session_id not in state" logic

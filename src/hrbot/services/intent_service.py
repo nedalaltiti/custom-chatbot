@@ -8,6 +8,7 @@ hardcoded keywords, providing more accurate and context-aware intent detection.
 import logging
 from typing import Optional
 from hrbot.services.gemini_service import GeminiService
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class IntentDetectionService:
         
     async def analyze_conversation_intent(self, user_message: str, conversation_context: Optional[str] = None) -> str:
         """
-        Analyze user intent in conversation context.
+        Analyze user intent in conversation context with fallback logic.
         
         Uses conservative approach - when in doubt, continue the conversation.
         Only returns END for clear, explicit conversation termination.
@@ -43,25 +44,34 @@ class IntentDetectionService:
         try:
             prompt = self._build_smart_intent_prompt(user_message, conversation_context)
             
-            result = await self.llm_service.analyze_messages([prompt])
-            
-            if result.is_success():
-                response = result.unwrap()["response"].strip().upper()
+            # Add timeout to prevent hanging on network issues
+            try:
+                result = await asyncio.wait_for(
+                    self.llm_service.analyze_messages([prompt]),
+                    timeout=3.0  # Short timeout for intent detection
+                )
                 
-                # Conservative parsing - default to CONTINUE if unclear
-                if "END" in response and self._is_clear_ending(response):
-                    logger.debug(f"Intent analysis: END detected for '{user_message[:30]}...'")
-                    return "END"
+                if result.is_success():
+                    response = result.unwrap()["response"].strip().upper()
+                    
+                    # Conservative parsing - default to CONTINUE if unclear
+                    if "END" in response and self._is_clear_ending(response):
+                        logger.debug(f"Intent analysis: END detected for '{user_message[:30]}...'")
+                        return "END"
+                    else:
+                        logger.debug(f"Intent analysis: CONTINUE for '{user_message[:30]}...'")
+                        return "CONTINUE"
                 else:
-                    logger.debug(f"Intent analysis: CONTINUE for '{user_message[:30]}...'")
-                    return "CONTINUE"
-            else:
-                logger.warning(f"Intent analysis failed: {result.error}, defaulting to CONTINUE")
-                return "CONTINUE"
+                    logger.warning(f"Intent analysis failed: {result.error}, using keyword fallback")
+                    return self._get_keyword_based_intent(user_message)
+                    
+            except asyncio.TimeoutError:
+                logger.warning(f"Intent analysis timed out, using keyword fallback")
+                return self._get_keyword_based_intent(user_message)
                 
         except Exception as e:
-            logger.error(f"Error in intent analysis: {e}, defaulting to CONTINUE")
-            return "CONTINUE"
+            logger.error(f"Error in intent analysis: {e}, using keyword fallback")
+            return self._get_keyword_based_intent(user_message)
     
     def _build_smart_intent_prompt(self, user_message: str, conversation_context: Optional[str] = None) -> str:
         """Build a sophisticated prompt for intent detection."""
@@ -122,4 +132,35 @@ Your classification:"""
             "NO THANKS", "THAT'S ALL", "THANKS BYE", "EXPLICITLY"
         ]
         
-        return any(indicator in response for indicator in ending_indicators) 
+        return any(indicator in response for indicator in ending_indicators)
+
+    def _get_keyword_based_intent(self, user_message: str) -> str:
+        """
+        Fallback keyword-based intent detection when LLM is unavailable.
+        
+        Uses conservative approach - only returns END for very clear signals.
+        """
+        message_lower = user_message.lower().strip()
+        
+        # Very explicit ending phrases
+        clear_endings = [
+            "bye", "goodbye", "thanks bye", "thank you bye", 
+            "that's all", "that is all", "nothing else", 
+            "i'm done", "i am done", "all set", "i'm good", "im good",
+            "no thanks", "no thank you", "thanks goodbye"
+        ]
+        
+        # Check for exact matches or very clear patterns
+        if message_lower in clear_endings:
+            logger.debug(f"Keyword-based END detected for exact match: '{user_message}'")
+            return "END"
+        
+        # Check for phrases that contain clear ending signals
+        for ending in clear_endings:
+            if ending in message_lower and len(message_lower) < 20:  # Short messages only
+                logger.debug(f"Keyword-based END detected for phrase: '{user_message}'")
+                return "END"
+        
+        # Default to CONTINUE for safety
+        logger.debug(f"Keyword-based CONTINUE (default) for: '{user_message[:30]}...'")
+        return "CONTINUE" 

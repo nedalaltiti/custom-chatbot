@@ -1,9 +1,0 @@
-Welcome to US HR Knowledge Base
-
-This is a placeholder document for the US HR team.
-Please add your US-specific HR documents to this directory.
-
-Key differences from Jordan tenant:
-- No NOI (Notice of Investigation) functionality
-- US-specific benefits and policies
-- Different HR support URL

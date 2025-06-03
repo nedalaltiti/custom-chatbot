@@ -1,5 +1,5 @@
 """
-In-house NumPy/ndarray vector store (disk-backed, no FAISS) with multi-tenant support.
+In-house NumPy/ndarray vector store (disk-backed, no FAISS) with multi-app support.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ from hrbot.core.document import Document
 from hrbot.infrastructure.embeddings import VertexDirectEmbeddings
 from hrbot.utils.error import StorageError, ErrorCode
 from hrbot.config.settings import settings
-from hrbot.config.tenant import get_current_tenant
+from hrbot.config.app_config import get_current_app_config
 
 logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    """Minimal but solid disk-backed cosine-similarity store with caching and multi-tenant support."""
+    """Minimal but solid disk-backed cosine-similarity store with caching and multi-app support."""
 
     FILE_EXT = ".npz"          # single compressed archive <collection>.npz
 
@@ -31,16 +31,16 @@ class VectorStore:
         self,
         *,
         collection_name: str = "hr_documents",
-        data_dir: str | Path = None,  # Will be auto-detected from tenant if not provided
+        data_dir: str | Path = None,  # Will be auto-detected from app config if not provided
         embeddings: VertexDirectEmbeddings | None = None,
     ) -> None:
         self.collection_name = collection_name
         
-        # Use tenant-specific data directory if not provided
+        # Use app-specific data directory if not provided
         if data_dir is None:
-            tenant = get_current_tenant()
-            self.data_dir = tenant.embeddings_dir
-            logger.info(f"Using tenant-specific embeddings directory: {self.data_dir}")
+            app_config = get_current_app_config()
+            self.data_dir = app_config.embeddings_dir
+            logger.info(f"Using app-specific embeddings directory: {self.data_dir}")
         else:
             self.data_dir = Path(data_dir)
             
