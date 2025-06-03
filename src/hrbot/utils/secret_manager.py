@@ -27,17 +27,7 @@ def get_aws_secret(secret_name: str, region_name: str = "us-west-1") -> Dict:
         NoCredentialsError: If AWS credentials are not configured
     """
     try:
-        # Debug logging for credential availability
-        aws_access_key_id = os.environ.get('AWS_ACCESS_KEY_ID')
-        aws_secret_access_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
-        
-        logger.debug(f"AWS credentials check: ACCESS_KEY_ID={'SET' if aws_access_key_id else 'NOT_SET'}, "
-                    f"SECRET_ACCESS_KEY={'SET' if aws_secret_access_key else 'NOT_SET'}")
-        
-        if not aws_access_key_id or not aws_secret_access_key:
-            logger.warning("AWS credentials not found in environment variables - this may cause authentication issues")
-        
-        # Use environment variables for AWS credentials (more robust than explicit passing)
+        # Use environment variables for AWS credentials
         session = boto3.session.Session()
         client = session.client(
             service_name='secretsmanager',
@@ -86,54 +76,33 @@ def get_database_credentials(
     # Get secret name from environment variable
     secret_name = secret_name or os.environ.get("AWS_DB_SECRET_NAME", "chatbot-clarity-db-dev-postgres")
     
-    # Enhanced debugging
-    logger.info(f"=== DATABASE CREDENTIALS DEBUG ===")
-    logger.info(f"Secret name: {secret_name}")
-    logger.info(f"Region: {region_name}")
-    logger.info(f"AWS_ACCESS_KEY_ID: {'SET' if os.environ.get('AWS_ACCESS_KEY_ID') else 'NOT_SET'}")
-    logger.info(f"AWS_SECRET_ACCESS_KEY: {'SET' if os.environ.get('AWS_SECRET_ACCESS_KEY') else 'NOT_SET'}")
-    logger.info(f"AWS_REGION: {os.environ.get('AWS_REGION', 'NOT_SET')}")
-    
     try:
         credentials = get_aws_secret(secret_name, region_name)
         
-        logger.info(f"AWS secret retrieved successfully")
-        logger.info(f"Secret keys: {list(credentials.keys())}")
-        
-        # Normalize/strip whitespace to avoid connection issues (e.g. stray newlines)
+        # Map AWS secret keys to our expected format
         db_config = {
-            "username": (credentials.get("USERNAME") or "").strip(),
-            "password": (credentials.get("PASSWORD") or "").strip(), 
-            "host": (credentials.get("HOST") or "").strip(),
-            "port": str(credentials.get("PORT", "5432")).strip(),
-            "database": (credentials.get("DATABASE_NAME") or "").strip(),
-            "schema": (credentials.get("SCHEMA_NAME") or "").strip(),
-            "sslmode": (credentials.get("SSLMODE") or "disable").strip().lower() or "disable"
+            "username": credentials.get("USERNAME"),
+            "password": credentials.get("PASSWORD"), 
+            "host": credentials.get("HOST"),
+            "port": str(credentials.get("PORT", "5432")),
+            "database": credentials.get("DATABASE_NAME"),
+            "schema": credentials.get("SCHEMA_NAME"),
+            "sslmode": "disable"  # This database doesn't support SSL
         }
-        
-        # Enhanced logging for each credential
-        logger.info(f"Parsed credentials:")
-        logger.info(f"  Host: {db_config['host']}")
-        logger.info(f"  Port: {db_config['port']}")
-        logger.info(f"  Database: {db_config['database']}")
-        logger.info(f"  Username: {db_config['username']}")
-        logger.info(f"  SSL mode: {db_config['sslmode']}")
         
         # Validate required fields
         required_fields = ["username", "password", "host", "database"]
         missing_fields = [field for field in required_fields if not db_config.get(field)]
         
         if missing_fields:
-            logger.error(f"Missing required fields: {missing_fields}")
             raise ValueError(f"Database secret missing required fields: {missing_fields}")
         
-        logger.info("✅ Database credentials successfully retrieved from AWS Secrets Manager")
+        logger.info("Database credentials successfully retrieved from AWS Secrets Manager")
+        logger.info(f"Database host: {db_config['host']}, SSL mode: {db_config['sslmode']}")
         return db_config
         
     except Exception as e:
-        logger.error(f"❌ Failed to get database credentials from AWS: {str(e)}")
-        logger.error(f"Exception type: {type(e).__name__}")
-        logger.error(f"Will attempt fallback to environment variables...")
+        logger.error(f"Failed to get database credentials: {str(e)}")
         raise
 
 
