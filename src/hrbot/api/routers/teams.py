@@ -12,10 +12,11 @@ from hrbot.utils.di import get_intent_service, get_content_classification_servic
 from hrbot.services.session_tracker import session_tracker 
 from hrbot.utils.message import split_greeting, is_pure_greeting
 from hrbot.utils.noi import NOIAccessChecker
-
-import logging, json, re, asyncio
-from pathlib import Path
-from datetime import datetime, timedelta
+from hrbot.services.content_classification_service import ConversationFlow
+import logging, re
+from datetime import datetime
+from pydantic import BaseModel
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ async def _handle_conversation_ending(
     if get_content_classification_service().should_send_feedback(analysis):
         logger.info(f"Sending feedback for {analysis.flow_type.value} scenario")
         
+        feedback_service.cancel_pending_feedback(user_id)
         # Send appropriate feedback card based on classification
         act_id = await feedback_service.send_feedback_prompt(service_url, conv_id)
         if act_id:
@@ -120,6 +122,9 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     service_url  = req.service_url
     conv_id      = req.conversation.id
     
+    if user_message.strip():  # Only track if user sent actual message
+        feedback_service.track_user_activity(user_id)
+
     # Send immediate typing indicator for user feedback
     if not req.value and user_message.strip():
         try:
@@ -278,21 +283,22 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             logger.error(f"Error in legacy invoke handling: {e}")
             return TeamsActivityResponse(text="")
     
-    # ─── Handle card actions (feedback submissions, etc.) ───────────────────────
     if req.value:
-        await adapter.send_typing(service_url, conv_id)
         action = req.value.get("action")
 
-        # ── 1) User clicked a star (submit_rating) ─────────────────────────────
         if action == "submit_rating":
             raw    = req.value.get("rating")
             rating = int(raw) if str(raw).isdigit() else None
 
             if rating:
-                # Highlight stars, keep the "Provide Feedback" button
+                # Preserve existing comment content when updating card
+                existing_comment = req.value.get("comment", "").strip()
+                
+                # Highlight stars, keep the "Provide Feedback" button with preserved comment
                 card = create_feedback_card(
                     selected_rating=rating,
-                    interactive=True
+                    interactive=True,
+                    existing_comment=existing_comment
                 )
                 act_id = feedback_cards.get(conv_id)
                 if act_id:
@@ -308,7 +314,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
 
             return TeamsActivityResponse(text="")
 
-        # ── 2) User dismissed the feedback prompt ────────────────────────────────
         if action == "dismiss_feedback":
             await adapter.send_message(
                 service_url, conv_id,
@@ -321,7 +326,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             
             return TeamsActivityResponse(text="")
 
-        # ── 3) User submitted feedback (submit_feedback) ─────────────────────────
         if action == "submit_feedback":
             raw     = req.value.get("rating")
             rating  = int(raw) if str(raw).isdigit() else 3
@@ -385,7 +389,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
 
         return TeamsActivityResponse(text="")
 
-    # ─── Intelligent intent detection for "anything else?" responses ──────
     if state.get("awaiting_more_help"):
         logger.info(f"User is responding to 'anything else?' question with: '{user_message}'")
         
@@ -434,7 +437,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             state["awaiting_more_help"] = False
             # Continue processing the message normally below
 
-    # ─── Handle greeting detection (after "anything else" check) ──────────
     greet_only, user_payload = split_greeting(user_message)
     is_only_greeting = is_pure_greeting(user_message)
     
@@ -481,9 +483,35 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         # If greeting had additional content but not first time, use that as the actual message
         user_message = user_payload.strip()
 
-    # ─── INTELLIGENT CONVERSATION FLOW ANALYSIS ──────────────────────────────
-    # This replaces all hardcoded conversation ending logic
-    
+    if noi_checker.is_noi_related(user_message):
+        logger.info(f"NOI-related query detected from user {user_id}: '{user_message}' (early handling)")
+        try:
+            noi_result = await noi_checker.check_access(user_id, job_title)
+            noi_response = noi_result['response']
+
+            # Memory & DB
+            memory = await get_or_create_memory(user_id)
+            memory.add_user_message(user_message)
+            memory.add_ai_message(noi_response)
+            user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
+            background_tasks.add_task(message_service.add_message,
+                                      bot_name="hrbot", env="development", channel="teams", user_id=user_id,
+                                      session_id=session_id, role="bot", text=noi_response, intent="informational",
+                                      reply_to_id=user_msg_id)
+
+            await adapter.send_message(service_url, conv_id, noi_response)
+
+            # schedule delayed feedback only
+            feedback_service.cancel_pending_feedback(user_id)
+            if not feedback_service.has_received_feedback(user_id):
+                feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, delay_minutes=10)
+
+            return TeamsActivityResponse(text="")
+        except Exception as e:
+            logger.error(f"Error processing NOI request for user {user_id}: {e}")
+            # fallthrough to standard processing if error
+
+
     # Get conversation context for analysis
     memory = await get_or_create_memory(user_id)
     conversation_context = None
@@ -495,13 +523,16 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     classification_service = get_content_classification_service()
     analysis = await classification_service.analyze_conversation_flow(
         user_message=user_message,
-        conversation_context=conversation_context
+        conversation_context=conversation_context,
+        response_type="standard"  
     )
     
-    logger.info(f"Conversation flow analysis: {analysis.flow_type.value} (confidence: {analysis.confidence})")
+    logger.info(f"Conversation flow analysis: {analysis.flow_type.value} (confidence: {analysis.confidence}, feedback_timing: {analysis.feedback_timing})")
     
+    should_end = classification_service.should_end_conversation(analysis)
+
     # Handle conversation ending scenarios immediately
-    if classification_service.should_end_conversation(analysis):
+    if should_end:
         await _handle_conversation_ending(
             analysis, user_id, service_url, conv_id, state, 
             user_message, session_id, req.reply_to_id
@@ -516,8 +547,13 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
             await adapter.send_message(service_url, conv_id, redirect_message)
             return TeamsActivityResponse(text="")
+        
+    if classification_service.should_schedule_delayed_feedback(analysis):
+        if not feedback_service.has_received_feedback(user_id):
+            delay_minutes = classification_service.get_feedback_delay_minutes(analysis)
+            feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, delay_minutes=delay_minutes)
+            logger.info(f"Scheduled delayed feedback for user {user_id} in {delay_minutes} minutes")
 
-    # ─── Record user turn in memory ────────────────────────────────────────────
     user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
     
     # Helper function for database persistence
@@ -537,32 +573,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         except Exception as exc:
             logger.warning("DB write (bot msg) failed: %s", exc)
     
-    # ─── Handle NOI (Notice of Investigation) queries ─────────────────────────
-    if noi_checker.is_noi_related(user_message):
-        logger.info(f"NOI-related query detected from user {user_id}: '{user_message}'")
-        try:
-            # Check user's access based on job title
-            noi_result = await noi_checker.check_access(user_id, job_title)
-            noi_response = noi_result['response']
-            
-            # Add to memory and send response
-            memory.add_ai_message(noi_response)
-            state["last_bot_response_time"] = datetime.utcnow()
-            
-            # Save bot response to database
-            background_tasks.add_task(_persist_bot_msg, user_msg_id, noi_response)
-            
-            # Send the NOI access response
-            await adapter.send_message(service_url, conv_id, noi_response)
-            
-            logger.info(f"NOI access check completed for user {user_id}: has_access={noi_result['has_access']}, job_title='{noi_result['job_title']}'")
-            return TeamsActivityResponse(text="")
-            
-        except Exception as e:
-            logger.error(f"Error processing NOI request for user {user_id}: {e}")
-            # Fall through to normal LLM processing if NOI handling fails
-    
-    # ─── Generate response using LLM ─────────────────────────────────────────  
     logger.info(f"[Teams] Generating response for %s", user_id)
 
     # Enhanced streaming logic following Microsoft Teams requirements
@@ -688,25 +698,144 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     return TeamsActivityResponse(text="")
 
 
+# Debug endpoint models and implementation for QA team
+class DebugChatRequest(BaseModel):
+    text: str
+    user_id: str = "debug-user"
+
+class DebugChatResponse(BaseModel):
+    user_message: str
+    bot_response: str
+    conversation_flow: str
+    confidence: float
+    processing_time: float
+
+@router.post("/debug", response_model=DebugChatResponse)
+async def debug_chat(req: DebugChatRequest):
+    """Debug endpoint that returns actual AI response for testing."""
+    import time
+    start_time = time.time()
+    
+    try:
+        # Create a session ID for this debug conversation
+        session_id = session_tracker.get(req.user_id)
+        
+        # Get conversation context
+        memory = await get_or_create_memory(req.user_id)
+        conversation_context = None
+        if memory.messages:
+            recent_messages = memory.messages[-4:]
+            conversation_context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_messages])
+        
+        # Analyze conversation flow
+        classification_service = get_content_classification_service()
+        analysis = await classification_service.analyze_conversation_flow(
+            user_message=req.text,
+            conversation_context=conversation_context,
+            response_type="standard"
+        )
+        
+        # Save user message to database
+        user_msg_id = await message_service.add_message(
+            bot_name="hrbot",
+            env="development",
+            channel="debug",  # Using 'debug' channel to distinguish from teams
+            user_id=req.user_id,
+            session_id=session_id,
+            role="user",
+            text=req.text,
+            intent=None,
+            reply_to_id=None,
+        )
+        
+        # Get AI response
+        result = await chat_processor.process_message(
+            req.text,
+            chat_history=[m["content"] for m in memory.messages],
+            user_id=req.user_id
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if result.is_success():
+            bot_response = result.unwrap()["response"].strip()
+            
+            # Save to memory for context
+            memory.add_user_message(req.text)
+            memory.add_ai_message(bot_response)
+            
+            # Save bot response to database
+            await message_service.add_message(
+                bot_name="hrbot",
+                env="development", 
+                channel="debug",
+                user_id=req.user_id,
+                session_id=session_id,
+                role="bot",
+                text=bot_response,
+                intent=classification_service.get_message_intent(analysis),
+                reply_to_id=user_msg_id,
+            )
+            
+            return DebugChatResponse(
+                user_message=req.text,
+                bot_response=bot_response,
+                conversation_flow=analysis.flow_type.value,
+                confidence=analysis.confidence,
+                processing_time=round(processing_time, 2)
+            )
+        else:
+            # Even on error, save to memory and database
+            error_response = "Sorry, I encountered an error processing your request."
+            memory.add_user_message(req.text)
+            memory.add_ai_message(error_response)
+            
+            await message_service.add_message(
+                bot_name="hrbot",
+                env="development",
+                channel="debug", 
+                user_id=req.user_id,
+                session_id=session_id,
+                role="bot",
+                text=error_response,
+                intent="error",
+                reply_to_id=user_msg_id,
+            )
+            
+            return DebugChatResponse(
+                user_message=req.text,
+                bot_response=error_response,
+                conversation_flow="error",
+                confidence=0.0,
+                processing_time=round(processing_time, 2)
+            )
+            
+    except Exception as e:
+        logger.error(f"Debug chat error: {e}")
+        processing_time = time.time() - start_time
+        return DebugChatResponse(
+            user_message=req.text,
+            bot_response=f"Error: {str(e)}",
+            conversation_flow="error",
+            confidence=0.0,
+            processing_time=round(processing_time, 2)
+        )
+
+
 def _clear_user_session(user_id: str):
-    """Archive conversation then clear per-user memory & state."""
+    """Clear per-user memory, state, and feedback tracking."""
+    
+    # Clear in-memory conversation data
     mem = user_memories.pop(user_id, None)
     user_states.pop(user_id, None)
     first_time_users.discard(user_id)
     
-    # Cancel any pending feedback tasks
-    if user_id in feedback_service.pending_feedback:
-        task = feedback_service.pending_feedback[user_id]
-        if not task.done():
-            task.cancel()
-        del feedback_service.pending_feedback[user_id]
-
-    if not mem or not mem.messages:
-        return
-
-    Path("data/conversations").mkdir(parents=True, exist_ok=True)
-    ts   = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    path = Path(f"data/conversations/{user_id}_{ts}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(mem.messages, f, indent=2)
-    logger.debug(f"Archived conversation for {user_id} → {path}")
+    # Clear feedback cards tracking for this user's conversations
+    feedback_cards.pop(user_id, None)
+    
+    # Clear feedback service session data
+    feedback_service.clear_user_session(user_id)
+    
+    # Log session cleanup
+    message_count = len(mem.messages) if mem and mem.messages else 0
+    logger.info(f"Cleared session for user {user_id} (had {message_count} messages in memory)")

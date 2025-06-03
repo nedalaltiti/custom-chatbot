@@ -53,7 +53,7 @@ BASE_SYSTEM = dedent(
 
         SENSITIVE
             — Begin with empathy (e.g., "I understand this can be stressful.", "I know this is an important decision.").
-            — Follow with a promise of help (e.g., "Here's the complete information:").
+            — Follow with a promise of help 
 
         NEUTRAL
             — Use a polite, matter-of-fact acknowledgement 
