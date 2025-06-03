@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import (Any, AsyncGenerator, Dict, List, Optional, Protocol, Set,
                     Tuple)
 
-from hrbot.core.rag.prompt import build as build_prompt
+from hrbot.core.rag.prompt_loader import build_prompt, get_base_system, get_flow_rules, get_template
 from hrbot.infrastructure.vector_store import VectorStore
 from hrbot.utils.error import ErrorCode, RAGError
 from hrbot.utils.result import Error, Result, Success
@@ -451,16 +451,13 @@ class RAG:
                 query=query,
             )
 
-        from hrbot.core.rag.prompt import BASE_SYSTEM, FLOW_RULES, TEMPLATE
-        system = system_override or BASE_SYSTEM
-
-        return TEMPLATE.format(
-            system=system,
-            flow_rules=FLOW_RULES,
-            context=context,
-            history="\n".join(history or []),
-            query=query,
-        )
+        # Use the prompt loader to get app-specific prompts
+        return build_prompt({
+            "system": system_override or get_base_system(),
+            "context": context,
+            "history": "\n".join(history or []),
+            "query": query,
+        })
 
     @staticmethod
     def _format_chunks_for_prompt(chunks: List[RetrievedChunk]) -> str:

@@ -6,6 +6,7 @@ from hrbot.config.settings import settings
 from hrbot.services.gemini_service import GeminiService
 from hrbot.db.session import get_connection_pool_status, AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import text
 import logging
 
 router = APIRouter()
@@ -23,7 +24,7 @@ async def database_health():
     try:
         # Test database connection
         async with AsyncSession() as session:
-            result = await session.execute("SELECT 1 as health_check")
+            result = await session.execute(text("SELECT 1 as health_check"))
             row = result.fetchone()
             
         # Get connection pool status
@@ -86,7 +87,7 @@ async def diagnostic():
     pool_info = {}
     try:
         async with AsyncSession() as session:
-            await session.execute("SELECT 1")
+            await session.execute(text("SELECT 1"))
             db_status = "Connected"
             pool_info = await get_connection_pool_status()
     except Exception as e:

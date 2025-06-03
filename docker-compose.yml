@@ -1,94 +1,194 @@
-version: '3.8'
-
 networks:
   hrbot-network:
     driver: bridge
     name: hrbot-network
 
 volumes:
-  # Persistent data storage
   hrbot-data:
     name: hrbot-data
-  hrbot-logs:
-    name: hrbot-logs
-  hrbot-knowledge:
-    name: hrbot-knowledge
+  postgres-data:
+    name: hrbot-postgres-data
+  hrbot-logs-jo:
+    name: hrbot-logs-jo
+  hrbot-logs-us:
+    name: hrbot-logs-us
 
 services:
-  hrbot:
+  
+  # Shared Infrastructure - PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: hrbot-postgres
+    restart: unless-stopped
+    
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hrbot}
+      POSTGRES_USER: ${POSTGRES_USER:-hrbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hrbot123}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    
+    ports:
+      - "5432:5432"
+    
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hrbot} -d ${POSTGRES_DB:-hrbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    networks:
+      - hrbot-network
+
+  # Jordan (jo) Instance
+  hrbot-jo:
     build:
       context: .
       dockerfile: Dockerfile
       target: runtime
       args:
-        POETRY_VERSION: 1.6.1
-        APP_USER: hrbot
-        APP_UID: 1000
-        APP_GID: 1000
+        APP_INSTANCE: jo  # Build arg for instance specification
     
-    image: hrbot:latest
-    container_name: hrbot-app
-    
-    # Restart policy for reliability
+    image: hrbot:jo-latest
+    container_name: hrbot-jo
     restart: unless-stopped
     
-    # Port mapping
     ports:
-      - "3978:3978"  # Teams Bot port
+      - "3978:3978"  # Keep as 3978 for JO
     
-    # Load environment from .env file
+    # Load environment from .env.jo file
     env_file:
-      - .env
+      - .env.jo
     
-    # Additional environment variables (these complement your .env file)
+    # Override specific settings for Docker environment
     environment:
-      # Container-specific settings
+      # Docker-specific overrides
+      - APP_INSTANCE=jo   # Runtime env override
+      - HOSTNAME=hrbot-jo
       - PYTHONPATH=/app/src
-      - PATH=/app/.venv/bin:$$PATH
       
-      # Ensure host binding for container
-      - HOST=0.0.0.0
+      # Force local database for Docker (override .env.jo if needed)
+      - USE_AWS_SECRETS=false
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hrbot
+      - DB_USER=hrbot
+      - DB_PASSWORD=hrbot123
+      - DB_SSLMODE=disable
+      
+      # Ensure correct port for JO instance
       - PORT=3978
     
-    # Volume mounts for persistent data
     volumes:
       - hrbot-data:/app/data
-      - hrbot-logs:/app/logs
-      - hrbot-knowledge:/app/data/knowledge
+      - hrbot-logs-jo:/app/logs
     
-    # Health check - matches Dockerfile format
+    depends_on:
+      postgres:
+        condition: service_healthy
+    
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3978/health')"]
+      test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: '1.0'
-        reservations:
-          memory: 512M
-          cpus: '0.25'
-    
-    # Logging configuration
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-        labels: "service=hrbot,environment=${DEBUG:-production}"
-    
-    # Network
     networks:
       - hrbot-network
     
-    # Security options
-    security_opt:
-      - no-new-privileges:true
+    profiles:
+      - jo
+      - multi-app
+      - development
+      - default
+
+  # US Instance
+  hrbot-us:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        APP_INSTANCE: us  # Build arg for instance specification
     
-    # User configuration (non-root) - matches Dockerfile
-    user: "1000:1000"
+    image: hrbot:us-latest
+    container_name: hrbot-us
+    restart: unless-stopped
+    
+    ports:
+      - "3979:3979"  # Different port for US
+    
+    # Load environment from .env.us file
+    env_file:
+      - .env.us
+    
+    # Override specific settings for Docker environment
+    environment:
+      # Docker-specific overrides
+      - APP_INSTANCE=us   # Runtime env override
+      - HOSTNAME=hrbot-us
+      - PYTHONPATH=/app/src
+      
+      # Force local database for Docker (override .env.us if needed)
+      - USE_AWS_SECRETS=false
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=hrbot
+      - DB_USER=hrbot
+      - DB_PASSWORD=hrbot123
+      - DB_SSLMODE=disable
+      
+      # Ensure correct port for US instance
+      - PORT=3979
+    
+    volumes:
+      - hrbot-data:/app/data
+      - hrbot-logs-us:/app/logs
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+    
+    healthcheck:
+      test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    networks:
+      - hrbot-network
+    
+    profiles:
+      - us
+      - multi-app
+      - development
+
+  # Nginx Reverse Proxy (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: hrbot-nginx
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    
+    depends_on:
+      - hrbot-jo
+      - hrbot-us
+    
+    networks:
+      - hrbot-network
+    
+    profiles:
+      - multi-app
+      - production
