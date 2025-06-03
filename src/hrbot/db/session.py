@@ -170,7 +170,6 @@ async def get_connection_pool_status():
         "checked_in": pool.checkedin(),
         "checked_out": pool.checkedout(),
         "overflow": pool.overflow(),
-        "invalid": pool.invalid(),
         "total_available": pool.checkedin() + pool.overflow(),
         "utilization_percent": round((pool.checkedout() / (pool.size() + pool.overflow())) * 100, 1) if (pool.size() + pool.overflow()) > 0 else 0
     }

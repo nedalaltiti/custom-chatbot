@@ -1,7 +1,7 @@
 """
 Content Classification Service for intelligent conversation flow analysis.
 
-Enhanced with smart feedback timing and NOI response handling.
+Enhanced with smart feedback timing and app-instance aware responses.
 """
 
 import logging
@@ -9,6 +9,8 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 from hrbot.services.gemini_service import GeminiService
+from hrbot.config.app_config import get_current_app_config
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +37,17 @@ class ConversationAnalysis:
 
 class ContentClassificationService:
     """
-    Intelligent conversation flow analysis using LLM with smart feedback timing.
+    Intelligent conversation flow analysis using LLM with app-instance awareness.
+    
+    This service adapts responses based on the current app instance (region),
+    ensuring appropriate crisis resources, emergency numbers, and HR contacts.
     """
     
     def __init__(self, llm_service: Optional[GeminiService] = None):
         """Initialize the content classification service."""
         self.llm_service = llm_service or GeminiService()
+        self.app_config = get_current_app_config()
+        logger.info(f"Content Classification Service initialized for: {self.app_config.name}")
         
     async def analyze_conversation_flow(
         self, 
@@ -50,6 +57,7 @@ class ContentClassificationService:
     ) -> ConversationAnalysis:
         """
         Analyze conversation flow with enhanced NOI and informational response handling.
+        Includes fallback logic for network connectivity issues.
         
         Args:
             user_message: The user's current message
@@ -73,22 +81,32 @@ class ContentClassificationService:
             # Build enhanced analysis prompt
             prompt = self._build_enhanced_flow_analysis_prompt(user_message, conversation_context)
             
-            # Get LLM analysis
-            result = await self.llm_service.analyze_messages([prompt])
-            
-            if result.is_success():
-                response = result.unwrap()["response"].strip()
-                return self._parse_enhanced_flow_analysis(response, user_message)
-            else:
-                logger.warning("Flow analysis failed, using safe defaults")
-                return self._get_safe_default_analysis()
+            # Get LLM analysis with timeout
+            try:
+                result = await asyncio.wait_for(
+                    self.llm_service.analyze_messages([prompt]),
+                    timeout=5.0  # 5 second timeout for flow analysis
+                )
+                
+                if result.is_success():
+                    response = result.unwrap()["response"].strip()
+                    analysis = self._parse_enhanced_flow_analysis(response, user_message)
+                    logger.debug(f"LLM flow analysis successful: {analysis.flow_type.value}")
+                    return analysis
+                else:
+                    logger.warning("Flow analysis failed, using keyword-based fallback")
+                    return self._get_keyword_based_analysis(user_message)
+                    
+            except asyncio.TimeoutError:
+                logger.warning("Flow analysis timed out, using keyword-based fallback")
+                return self._get_keyword_based_analysis(user_message)
                 
         except Exception as e:
-            logger.error(f"Error in conversation flow analysis: {e}")
-            return self._get_safe_default_analysis()
+            logger.error(f"Error in conversation flow analysis: {e}, using keyword-based fallback")
+            return self._get_keyword_based_analysis(user_message)
     
     def _build_enhanced_flow_analysis_prompt(self, user_message: str, conversation_context: Optional[str] = None) -> str:
-        """Build an enhanced prompt for smart conversation flow analysis."""
+        """Build an enhanced prompt for smart conversation flow analysis with app context."""
         
         context_section = ""
         if conversation_context:
@@ -98,9 +116,18 @@ CONVERSATION CONTEXT:
 
 """
         
-        prompt = f"""You are an expert conversation flow analyst for an HR Assistant. Analyze this user message to determine conversation flow and smart feedback timing.
+        # Add app instance context to the prompt
+        app_context = f"""
+APP INSTANCE CONTEXT:
+- Current region: {self.app_config.name}
+- Supports NOI: {self.app_config.supports_noi}
+- HR Support URL: {self.app_config.hr_support_url}
 
-{context_section}USER MESSAGE: "{user_message}"
+"""
+        
+        prompt = f"""You are an expert conversation flow analyst for an HR Assistant serving {self.app_config.name}. Analyze this user message to determine conversation flow and smart feedback timing.
+
+{app_context}{context_section}USER MESSAGE: "{user_message}"
 
 FLOW CATEGORIES:
 
@@ -238,36 +265,98 @@ Analyze the message:"""
         )
     
     def get_response_message(self, analysis: ConversationAnalysis) -> Optional[str]:
-        """Get appropriate response message based on flow analysis."""
+        """
+        Get appropriate RAW response message based on flow analysis.
+        
+        Note: These responses will be formatted by the smart response formatter,
+        so they should NOT include closing questions or redundant formatting.
+        """
         
         if analysis.flow_type == ConversationFlow.END_SAFETY_INTERVENTION:
-            return (
-                "I'm concerned about your message. If you're experiencing thoughts of self-harm, "
-                "please reach out to a mental health professional or crisis hotline immediately. "
-                "For workplace support, you can contact our HR team: https://hrsupport.usclarity.com/support/home"
-            )
+            return self._get_crisis_response_message()
         
         elif analysis.flow_type == ConversationFlow.END_VIOLATION:
             return (
-                "I notice your message contains content that may not be appropriate for our workplace environment. "
-                "For work-related concerns, please submit them through our HR Support portal: "
-                "https://hrsupport.usclarity.com/support/home"
+                f"I notice your message contains content that may not be appropriate for our workplace environment. "
+                f"For work-related concerns, please submit them through our HR Support portal: "
+                f"{self.app_config.hr_support_url}"
             )
         
         elif analysis.flow_type == ConversationFlow.CONTINUE_REDIRECTED:
-            return (
-                "I'm here to help with HR and workplace-related questions. "
-                "Is there anything work-related I can assist you with?"
-            )
+            return "I'm here to help with HR and workplace-related questions."
         
         elif analysis.flow_type == ConversationFlow.END_NATURAL:
-            return "Thank you for using our HR Assistant! Have a great day!"
+            return f"Thank you for using our {self.app_config.name}! Have a great day!"
         
         elif analysis.flow_type == ConversationFlow.END_SATISFIED:
             return "Glad I could help! Feel free to reach out anytime."
         
         else:
             return None  # Use standard HR assistant response
+    
+    def _get_crisis_response_message(self) -> str:
+        """
+        Get app-instance aware crisis response message.
+        
+        This ensures users get appropriate local emergency numbers and resources
+        instead of incorrect numbers from other countries.
+        """
+        try:
+            # Base empathetic response
+            base_message = (
+                "I understand this is a sensitive situation, and I want to assure you that I'm here to provide support and information.\n\n"
+                "I am programmed to provide HR-related information, and I am not qualified to provide assistance with suicidal thoughts.\n\n"
+            )
+            
+            # App-specific crisis guidance
+            if self.app_config.instance_id == "jo":
+                # Jordan-specific guidance
+                crisis_guidance = (
+                    "• **Immediate Assistance:**\n"
+                    "If you are in immediate danger, please call emergency services or go to the nearest hospital.\n\n"
+                    "• **Mental Health Support:**\n"
+                    "Reach out to a crisis hotline or mental health professional for help.\n"
+                    "Contact local emergency services (911) or mental health professionals in Jordan.\n\n"
+                    "• **Workplace Support:**\n"
+                    f"For work-related support, you can contact our HR team: {self.app_config.hr_support_url}\n\n"
+                    "Please prioritize your safety and reach out to qualified mental health professionals."
+                )
+            
+            elif self.app_config.instance_id == "us":
+                # US-specific guidance with correct numbers
+                crisis_guidance = (
+                    "• **Immediate Assistance:**\n"
+                    "If you are in immediate danger, please call emergency services (911) or go to the nearest hospital.\n\n"
+                    "• **Mental Health Support:**\n"
+                    "Reach out to a crisis hotline or mental health professional for help.\n"
+                    "Suicide & Crisis Lifeline: Call or text 988. Available 24/7, free, and confidential.\n\n"
+                    "• **Workplace Support:**\n"
+                    f"For work-related support, you can contact our HR team: {self.app_config.hr_support_url}\n\n"
+                    "Please prioritize your safety and reach out to qualified mental health professionals."
+                )
+            
+            else:
+                # Generic guidance for other regions
+                crisis_guidance = (
+                    "• **Immediate Assistance:**\n"
+                    "If you are in immediate danger, please call your local emergency services or go to the nearest hospital.\n\n"
+                    "• **Mental Health Support:**\n"
+                    "Reach out to a crisis hotline or mental health professional in your area for help.\n\n"
+                    "• **Workplace Support:**\n"
+                    f"For work-related support, you can contact our HR team: {self.app_config.hr_support_url}\n\n"
+                    "Please prioritize your safety and reach out to qualified mental health professionals."
+                )
+            
+            return base_message + crisis_guidance
+            
+        except Exception as e:
+            logger.error(f"Error generating crisis response: {e}")
+            # Fallback to safe generic message
+            return (
+                "I'm concerned about your message. If you're experiencing thoughts of self-harm, "
+                "please reach out to a mental health professional or local emergency services immediately. "
+                f"For workplace support, you can contact our HR team: {self.app_config.hr_support_url}"
+            )
     
     def should_end_conversation(self, analysis: ConversationAnalysis) -> bool:
         """Return *True* only when we are highly confident the user is ending.
@@ -331,3 +420,78 @@ Analyze the message:"""
             return "informational"
         else:
             return "CONTINUE"
+
+    def _get_keyword_based_analysis(self, user_message: str) -> ConversationAnalysis:
+        """
+        Fallback keyword-based analysis when LLM is unavailable.
+        
+        This provides basic conversation flow analysis using keyword patterns
+        to ensure the system remains functional during connectivity issues.
+        """
+        message_lower = user_message.lower().strip()
+        
+        # Clear ending signals
+        ending_keywords = [
+            "bye", "goodbye", "thanks bye", "thank you bye", "that's all", 
+            "that is all", "nothing else", "i'm done", "i am done", 
+            "no thanks", "no thank you", "all set", "i'm good", "im good"
+        ]
+        
+        if any(phrase in message_lower for phrase in ending_keywords):
+            return ConversationAnalysis(
+                flow_type=ConversationFlow.END_NATURAL,
+                confidence=0.8,
+                reason="Keyword-based detection of ending signal",
+                requires_feedback=True,
+                feedback_timing="immediate"
+            )
+        
+        # Off-topic detection
+        off_topic_keywords = [
+            "weather", "sports", "movie", "music", "food", "restaurant",
+            "politics", "news", "celebrity", "game", "entertainment"
+        ]
+        
+        if any(keyword in message_lower for keyword in off_topic_keywords):
+            return ConversationAnalysis(
+                flow_type=ConversationFlow.CONTINUE_REDIRECTED,
+                confidence=0.7,
+                reason="Keyword-based off-topic detection",
+                requires_feedback=False,
+                feedback_timing="none"
+            )
+        
+        # Safety keywords (conservative approach)
+        safety_keywords = [
+            "kill myself", "suicide", "end my life", "hurt myself", 
+            "self harm", "self-harm", "want to die"
+        ]
+        
+        if any(phrase in message_lower for phrase in safety_keywords):
+            return ConversationAnalysis(
+                flow_type=ConversationFlow.END_SAFETY_INTERVENTION,
+                confidence=0.9,
+                reason="Keyword-based safety concern detection",
+                requires_feedback=True,
+                feedback_timing="immediate",
+                should_escalate=True
+            )
+        
+        # Single word queries (likely topics to explore)
+        if len(user_message.split()) == 1 and len(user_message) > 2:
+            return ConversationAnalysis(
+                flow_type=ConversationFlow.CONTINUE_NORMAL,
+                confidence=0.8,
+                reason="Single word query - likely topic request",
+                requires_feedback=False,
+                feedback_timing="delayed"
+            )
+        
+        # Default: continue conversation
+        return ConversationAnalysis(
+            flow_type=ConversationFlow.CONTINUE_NORMAL,
+            confidence=0.6,
+            reason="Keyword-based fallback - default to continue",
+            requires_feedback=False,
+            feedback_timing="delayed"
+        )
