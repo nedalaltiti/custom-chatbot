@@ -640,7 +640,7 @@ async def reload_knowledge_base_concurrent(cfg: ChunkingConfig | None = None, co
                 return await process_document(str(p), cfg)
             except Exception as e:
                 logger.error(f"Error processing {p.name}: {e}")
-                return []
+    return []
 
     # Process files with progress tracking
     start_time = asyncio.get_event_loop().time()
