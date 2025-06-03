@@ -497,10 +497,10 @@ class RAG:
             src = c.metadata.get("source")
             if src and src not in seen:
                 sources.append({
-                    "title": src,
-                    "path": c.metadata.get("file_path", ""),
-                    "type": c.metadata.get("file_type", ""),
-                    "relevance": round(c.relevance_score, 2),
+                        "title": src,
+                        "path": c.metadata.get("file_path", ""),
+                        "type": c.metadata.get("file_type", ""),
+                        "relevance": round(c.relevance_score, 2),
                 })
                 seen.add(src)
         return sources
