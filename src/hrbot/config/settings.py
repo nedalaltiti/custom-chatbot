@@ -51,6 +51,12 @@ class DatabaseSettings:
         # Prefer AWS Secrets Manager unless the caller explicitly disables it
         use_aws_secrets = get_env_var_bool("USE_AWS_SECRETS", True)
         
+        # Enhanced debugging
+        logger.info(f"=== DATABASE CONFIGURATION DEBUG ===")
+        logger.info(f"SKIP_DB_INIT: {skip_db_init}")
+        logger.info(f"USE_AWS_SECRETS: {use_aws_secrets}")
+        logger.info(f"AWS_DB_SECRET_NAME: {os.environ.get('AWS_DB_SECRET_NAME', 'NOT_SET')}")
+        
         if use_aws_secrets and not skip_db_init:
             try:
                 from hrbot.utils.secret_manager import get_database_credentials, get_aws_region
@@ -59,10 +65,10 @@ class DatabaseSettings:
                 region = get_aws_region()
                 secret_name = get_env_var("AWS_DB_SECRET_NAME", "chatbot-clarity-db-dev-postgres")
                 
-                logger.info(f"Loading database credentials from AWS Secrets Manager: {secret_name}")
+                logger.info(f"Attempting to load database credentials from AWS Secrets Manager: {secret_name}")
                 db_creds = get_database_credentials(secret_name, region)
                 
-                return cls(
+                result = cls(
                     name=db_creds["database"],
                     user=db_creds["username"],
                     password=db_creds["password"],
@@ -75,8 +81,12 @@ class DatabaseSettings:
                     pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
                 )
                 
+                logger.info(f"✅ AWS Database config: host={result.host}, port={result.port}, database={result.name}")
+                logger.info(f"Database URL: {result.url}")
+                return result
+                
             except Exception as e:
-                logger.error(f"Failed to load database credentials from AWS Secrets Manager: {e}")
+                logger.error(f"❌ Failed to load database credentials from AWS Secrets Manager: {e}")
                 
                 # If USE_AWS_SECRETS=true but AWS fails, we don't want to fall back to local DB
                 # Instead, provide a dummy configuration that will fail gracefully at runtime
@@ -86,7 +96,7 @@ class DatabaseSettings:
                     logger.error("To use local database instead, set USE_AWS_SECRETS=false")
                     
                     # Return dummy configuration that will cause a clear error at runtime
-                    return cls(
+                    result = cls(
                         name="aws_rds_unavailable",
                         user="aws_rds_unavailable", 
                         password="aws_rds_unavailable",
@@ -98,6 +108,9 @@ class DatabaseSettings:
                         pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
                         pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
                     )
+                    
+                    logger.error(f"Using dummy config: {result.url}")
+                    return result
                 
                 logger.info("Falling back to environment variables for database configuration")
                 # Fall through to environment variable method only if USE_AWS_SECRETS=false
@@ -108,10 +121,18 @@ class DatabaseSettings:
         db_password = get_env_var("DB_PASSWORD")
         db_host = get_env_var("DB_HOST")
         
+        # Enhanced environment variable debugging
+        logger.info(f"=== ENVIRONMENT VARIABLE FALLBACK ===")
+        logger.info(f"DB_NAME: {db_name or 'NOT_SET'}")
+        logger.info(f"DB_USER: {db_user or 'NOT_SET'}")
+        logger.info(f"DB_PASSWORD: {'SET' if db_password else 'NOT_SET'}")
+        logger.info(f"DB_HOST: {db_host or 'NOT_SET'}")
+        logger.info(f"DB_PORT: {os.environ.get('DB_PORT', 'NOT_SET')}")
+        
         # Provide safe fallbacks when database initialization is skipped
         if skip_db_init:
             logger.info("SKIP_DB_INIT=true - using dummy database configuration")
-            return cls(
+            result = cls(
                 name=db_name or "dummy",
                 user=db_user or "dummy",
                 password=db_password or "dummy",
@@ -123,6 +144,8 @@ class DatabaseSettings:
                 pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
                 pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
             )
+            logger.info(f"Skip DB config: {result.url}")
+            return result
         
         # Default: Use environment variables with validation
         if not all([db_name, db_user, db_password, db_host]):
@@ -135,7 +158,7 @@ class DatabaseSettings:
             else:
                 # If AWS is enabled but failed, and no local variables, return dummy config
                 logger.warning("AWS Secrets Manager failed and no local DB variables provided")
-                return cls(
+                result = cls(
                     name="placeholder",
                     user="placeholder",
                     password="placeholder", 
@@ -147,8 +170,10 @@ class DatabaseSettings:
                     pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
                     pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
                 )
+                logger.warning(f"Placeholder config: {result.url}")
+                return result
             
-        return cls(
+        result = cls(
             name=db_name,
             user=db_user,
             password=db_password,
@@ -160,6 +185,10 @@ class DatabaseSettings:
             pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
             pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
         )
+        
+        logger.info(f"✅ Environment variable config: host={result.host}, port={result.port}, database={result.name}")
+        logger.info(f"Database URL: {result.url}")
+        return result
     
 @dataclass(frozen=True)
 class GeminiSettings:
