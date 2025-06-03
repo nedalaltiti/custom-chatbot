@@ -15,38 +15,6 @@ volumes:
 
 services:
   
-  # Shared Infrastructure - PostgreSQL Database (optional - remove if using AWS RDS)
-  postgres:
-    image: postgres:16-alpine
-    container_name: hrbot-postgres
-    restart: unless-stopped
-    
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-hrbot}
-      POSTGRES_USER: ${POSTGRES_USER:-hrbot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hrbot123}
-      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-    
-    ports:
-      - "5432:5432"
-    
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
-    
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hrbot} -d ${POSTGRES_DB:-hrbot}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    
-    networks:
-      - hrbot-network
-    
-    profiles:
-      - local-db
-
   # Jordan (jo) Instance
   hrbot-jo:
     build:
