@@ -27,11 +27,23 @@ def get_aws_secret(secret_name: str, region_name: str = "us-west-1") -> Dict:
         NoCredentialsError: If AWS credentials are not configured
     """
     try:
-        # Use environment variables for AWS credentials
-        session = boto3.session.Session()
-        client = session.client(
-            service_name='secretsmanager',
-            region_name=region_name
+        # Get credentials explicitly from environment variables
+        aws_access_key_id = os.environ.get('AWS_ACCESS_KEY_ID')
+        aws_secret_access_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+        
+        # Debug logging for container environments
+        logger.debug(f"AWS credentials check: ACCESS_KEY_ID={'SET' if aws_access_key_id else 'NOT_SET'}, "
+                    f"SECRET_ACCESS_KEY={'SET' if aws_secret_access_key else 'NOT_SET'}")
+        
+        if not aws_access_key_id or not aws_secret_access_key:
+            raise NoCredentialsError("AWS credentials not found in environment variables")
+        
+        # Create client with explicit credentials to avoid any credential chain issues
+        client = boto3.client(
+            'secretsmanager',
+            region_name=region_name,
+            aws_access_key_id=aws_access_key_id,
+            aws_secret_access_key=aws_secret_access_key
         )
         
         logger.info(f"Fetching secret: {secret_name} from region: {region_name}")

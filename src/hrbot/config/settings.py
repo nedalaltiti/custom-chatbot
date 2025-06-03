@@ -77,8 +77,30 @@ class DatabaseSettings:
                 
             except Exception as e:
                 logger.error(f"Failed to load database credentials from AWS Secrets Manager: {e}")
+                
+                # If USE_AWS_SECRETS=true but AWS fails, we don't want to fall back to local DB
+                # Instead, provide a dummy configuration that will fail gracefully at runtime
+                if use_aws_secrets:
+                    logger.error("AWS Secrets Manager is enabled but failed. Application will not start.")
+                    logger.error("Please check your AWS credentials and network connectivity.")
+                    logger.error("To use local database instead, set USE_AWS_SECRETS=false")
+                    
+                    # Return dummy configuration that will cause a clear error at runtime
+                    return cls(
+                        name="aws_rds_unavailable",
+                        user="aws_rds_unavailable", 
+                        password="aws_rds_unavailable",
+                        host="aws_rds_unavailable",
+                        port=5432,
+                        sslmode="disable",
+                        pool_size=get_env_var_int("DB_POOL_SIZE", 5),
+                        max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
+                        pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
+                        pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
+                    )
+                
                 logger.info("Falling back to environment variables for database configuration")
-                # Fall through to environment variable method
+                # Fall through to environment variable method only if USE_AWS_SECRETS=false
         
         # Get database settings from environment variables
         db_name = get_env_var("DB_NAME") 
@@ -106,7 +128,25 @@ class DatabaseSettings:
         if not all([db_name, db_user, db_password, db_host]):
             missing = [name for name, val in [("DB_NAME", db_name), ("DB_USER", db_user), 
                                             ("DB_PASSWORD", db_password), ("DB_HOST", db_host)] if not val]
-            raise ValueError(f"Missing required database environment variables: {missing}")
+            
+            # Only require local DB variables if USE_AWS_SECRETS=false
+            if not use_aws_secrets:
+                raise ValueError(f"Missing required database environment variables: {missing}")
+            else:
+                # If AWS is enabled but failed, and no local variables, return dummy config
+                logger.warning("AWS Secrets Manager failed and no local DB variables provided")
+                return cls(
+                    name="placeholder",
+                    user="placeholder",
+                    password="placeholder", 
+                    host="placeholder",
+                    port=5432,
+                    sslmode="disable",
+                    pool_size=get_env_var_int("DB_POOL_SIZE", 5),
+                    max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
+                    pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
+                    pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
+                )
             
         return cls(
             name=db_name,
