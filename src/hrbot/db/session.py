@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
 from hrbot.config.settings import settings
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,13 @@ async def warm_connection_pool(target_connections: int = None) -> bool:
 # Application lifecycle management with performance optimization
 async def init_database():
     """Initialize database with fast connection test and optional warming."""
+    # Check if database initialization should be skipped
+    skip_db_init = os.environ.get("SKIP_DB_INIT", "").lower() in ("true", "1", "yes")
+    if skip_db_init:
+        logger.info("🚫 Database initialization skipped (SKIP_DB_INIT=true)")
+        logger.info("Application will run without database connectivity")
+        return
+    
     try:
         # Fast connection test
         async with AsyncSession() as session:

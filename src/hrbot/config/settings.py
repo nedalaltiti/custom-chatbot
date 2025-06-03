@@ -43,10 +43,15 @@ class DatabaseSettings:
     
     @classmethod
     def from_environment(cls) -> "DatabaseSettings":
+        import os
+        
+        # Check if database initialization should be skipped
+        skip_db_init = os.environ.get("SKIP_DB_INIT", "").lower() in ("true", "1", "yes")
+        
         # Prefer AWS Secrets Manager unless the caller explicitly disables it
         use_aws_secrets = get_env_var_bool("USE_AWS_SECRETS", True)
         
-        if use_aws_secrets:
+        if use_aws_secrets and not skip_db_init:
             try:
                 from hrbot.utils.secret_manager import get_database_credentials, get_aws_region
                 
@@ -75,14 +80,41 @@ class DatabaseSettings:
                 logger.info("Falling back to environment variables for database configuration")
                 # Fall through to environment variable method
         
-        # Default: Use environment variables
+        # Get database settings from environment variables
+        db_name = get_env_var("DB_NAME") 
+        db_user = get_env_var("DB_USER")
+        db_password = get_env_var("DB_PASSWORD")
+        db_host = get_env_var("DB_HOST")
+        
+        # Provide safe fallbacks when database initialization is skipped
+        if skip_db_init:
+            logger.info("SKIP_DB_INIT=true - using dummy database configuration")
+            return cls(
+                name=db_name or "dummy",
+                user=db_user or "dummy",
+                password=db_password or "dummy",
+                host=db_host or "localhost",  # Use localhost to avoid DNS issues
+                port=get_env_var_int("DB_PORT", 5432),
+                sslmode=get_env_var("DB_SSLMODE", "disable"),
+                pool_size=get_env_var_int("DB_POOL_SIZE", 5),
+                max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
+                pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
+                pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
+            )
+        
+        # Default: Use environment variables with validation
+        if not all([db_name, db_user, db_password, db_host]):
+            missing = [name for name, val in [("DB_NAME", db_name), ("DB_USER", db_user), 
+                                            ("DB_PASSWORD", db_password), ("DB_HOST", db_host)] if not val]
+            raise ValueError(f"Missing required database environment variables: {missing}")
+            
         return cls(
-            name=get_env_var("DB_NAME"),
-            user=get_env_var("DB_USER"),
-            password=get_env_var("DB_PASSWORD"),
-            host=get_env_var("DB_HOST"),
+            name=db_name,
+            user=db_user,
+            password=db_password,
+            host=db_host,
             port=get_env_var_int("DB_PORT", 5432),
-            sslmode=get_env_var("DB_SSLMODE", "disable"),  # Only used when not leveraging AWS Secrets
+            sslmode=get_env_var("DB_SSLMODE", "disable"),
             pool_size=get_env_var_int("DB_POOL_SIZE", 5),
             max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
             pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
