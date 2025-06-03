@@ -13,6 +13,25 @@ pipelines:
             - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
             - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+            - export AWS_REGION=us-west-1
+            
+            # ✅ Credential validation and setup
+            - echo "=== AWS CREDENTIAL VALIDATION ==="
+            - echo "AWS_ACCESS_KEY_ID starts with: ${AWS_ACCESS_KEY_ID:0:7}"
+            - if [ -n "$AWS_SECRET_ACCESS_KEY" ]; then echo "AWS_SECRET_ACCESS_KEY is set (length: ${#AWS_SECRET_ACCESS_KEY})"; else echo "AWS_SECRET_ACCESS_KEY is NOT SET"; fi
+            - echo "AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION"
+            - echo "AWS_REGION: $AWS_REGION"
+            - echo "=== END DEBUG INFO ==="
+            
+            # 🔍 TEST: Verify AWS credentials actually work
+            - echo "=== TESTING AWS AUTHENTICATION ==="
+            - aws sts get-caller-identity
+            - echo "✅ AWS authentication successful"
+            
+            # 🔍 TEST: Verify AWS Secrets Manager access
+            - echo "Testing AWS Secrets Manager access..."
+            - aws secretsmanager get-secret-value --secret-id chatbot-clarity-db-dev-postgres --region us-west-1 --query 'SecretString' --output text > /dev/null
+            - echo "✅ AWS Secrets Manager access confirmed"
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
             - docker build --no-cache -t $IMAGE_FULL_PROD .
@@ -47,6 +66,25 @@ pipelines:
             - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
             - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+            - export AWS_REGION=us-west-1
+            
+            # ✅ Credential validation and setup
+            - echo "=== AWS CREDENTIAL VALIDATION ==="
+            - echo "AWS_ACCESS_KEY_ID starts with: ${AWS_ACCESS_KEY_ID:0:7}"
+            - if [ -n "$AWS_SECRET_ACCESS_KEY" ]; then echo "AWS_SECRET_ACCESS_KEY is set (length: ${#AWS_SECRET_ACCESS_KEY})"; else echo "AWS_SECRET_ACCESS_KEY is NOT SET"; fi
+            - echo "AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION"
+            - echo "AWS_REGION: $AWS_REGION"
+            - echo "=== END DEBUG INFO ==="
+            
+            # 🔍 TEST: Verify AWS credentials actually work
+            - echo "=== TESTING AWS AUTHENTICATION ==="
+            - aws sts get-caller-identity
+            - echo "✅ AWS authentication successful"
+            
+            # 🔍 TEST: Verify AWS Secrets Manager access
+            - echo "Testing AWS Secrets Manager access..."
+            - aws secretsmanager get-secret-value --secret-id chatbot-clarity-db-dev-postgres --region us-west-1 --query 'SecretString' --output text > /dev/null
+            - echo "✅ AWS Secrets Manager access confirmed"
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
             - docker build --no-cache -t $IMAGE_FULL_STG .
@@ -81,6 +119,25 @@ pipelines:
             - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
             - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
+            - export AWS_REGION=us-west-1
+            
+            # ✅ Credential validation and setup
+            - echo "=== AWS CREDENTIAL VALIDATION ==="
+            - echo "AWS_ACCESS_KEY_ID starts with: ${AWS_ACCESS_KEY_ID:0:7}"
+            - if [ -n "$AWS_SECRET_ACCESS_KEY" ]; then echo "AWS_SECRET_ACCESS_KEY is set (length: ${#AWS_SECRET_ACCESS_KEY})"; else echo "AWS_SECRET_ACCESS_KEY is NOT SET"; fi
+            - echo "AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION"
+            - echo "AWS_REGION: $AWS_REGION"
+            - echo "=== END DEBUG INFO ==="
+            
+            # 🔍 TEST: Verify AWS credentials actually work
+            - echo "=== TESTING AWS AUTHENTICATION ==="
+            - aws sts get-caller-identity
+            - echo "✅ AWS authentication successful"
+            
+            # 🔍 TEST: Verify AWS Secrets Manager access
+            - echo "Testing AWS Secrets Manager access..."
+            - aws secretsmanager get-secret-value --secret-id chatbot-clarity-db-dev-postgres --region us-west-1 --query 'SecretString' --output text > /dev/null
+            - echo "✅ AWS Secrets Manager access confirmed"
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
             - docker build --no-cache -t $IMAGE_FULL_DEV .
