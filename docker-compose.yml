@@ -70,26 +70,12 @@ services:
       - APP_INSTANCE=jo   # Runtime env override
       - HOSTNAME=hrbot-jo
       - PYTHONPATH=/app/src
-      
-      # Force local database for Docker (override .env.jo if needed)
-      - USE_AWS_SECRETS=false
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=hrbot
-      - DB_USER=hrbot
-      - DB_PASSWORD=hrbot123
-      - DB_SSLMODE=disable
-      
-      # Ensure correct port for JO instance
       - PORT=3978
     
     volumes:
       - hrbot-data:/app/data
       - hrbot-logs-jo:/app/logs
     
-    depends_on:
-      postgres:
-        condition: service_healthy
     
     healthcheck:
       test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
@@ -133,26 +119,12 @@ services:
       - APP_INSTANCE=us   # Runtime env override
       - HOSTNAME=hrbot-us
       - PYTHONPATH=/app/src
-      
-      # Force local database for Docker (override .env.us if needed)
-      - USE_AWS_SECRETS=false
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=hrbot
-      - DB_USER=hrbot
-      - DB_PASSWORD=hrbot123
-      - DB_SSLMODE=disable
-      
-      # Ensure correct port for US instance
       - PORT=3979
-    
+      
+      
     volumes:
       - hrbot-data:/app/data
       - hrbot-logs-us:/app/logs
-    
-    depends_on:
-      postgres:
-        condition: service_healthy
     
     healthcheck:
       test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
