@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime
 import shutil
 
+import aiofiles  # Add async file support
 import psycopg2
 
 from hrbot.utils.error import StorageError, ErrorCode
@@ -149,7 +150,7 @@ class MemoryStorage(Storage[T]):
 
 
 class FileStorage(Storage[T]):
-    """File-based storage implementation."""
+    """High-performance file-based storage with async I/O."""
     
     def __init__(self, base_dir: str, serializer: Optional[str] = "pickle"):
         """
@@ -164,7 +165,7 @@ class FileStorage(Storage[T]):
         
         # Create base directory if it doesn't exist
         os.makedirs(self.base_dir, exist_ok=True)
-        logger.info(f"Initialized file storage in {self.base_dir}")
+        logger.info(f"Initialized high-performance file storage in {self.base_dir}")
     
     def _get_path(self, key: str) -> Path:
         """Convert key to file path."""
@@ -180,7 +181,7 @@ class FileStorage(Storage[T]):
         return self.base_dir / f"{safe_key}{extension}"
     
     async def get(self, key: str) -> Optional[T]:
-        """Get an item from file storage."""
+        """Get an item from file storage using async I/O."""
         path = self._get_path(key)
         
         try:
@@ -188,11 +189,13 @@ class FileStorage(Storage[T]):
                 return None
                 
             if self.serializer == "json":
-                with open(path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                async with aiofiles.open(path, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                    return json.loads(content)
             else:
-                with open(path, 'rb') as f:
-                    return pickle.load(f)
+                async with aiofiles.open(path, 'rb') as f:
+                    content = await f.read()
+                    return pickle.loads(content)
                     
         except Exception as e:
             logger.error(f"Error reading from file storage: {e}")
@@ -203,7 +206,7 @@ class FileStorage(Storage[T]):
             )
     
     async def put(self, key: str, value: T) -> bool:
-        """Put an item into file storage."""
+        """Put an item into file storage using async I/O."""
         path = self._get_path(key)
         
         try:
@@ -211,11 +214,13 @@ class FileStorage(Storage[T]):
             path.parent.mkdir(parents=True, exist_ok=True)
             
             if self.serializer == "json":
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(value, f, indent=2, default=str)
+                content = json.dumps(value, indent=2, default=str)
+                async with aiofiles.open(path, 'w', encoding='utf-8') as f:
+                    await f.write(content)
             else:
-                with open(path, 'wb') as f:
-                    pickle.dump(value, f)
+                content = pickle.dumps(value)
+                async with aiofiles.open(path, 'wb') as f:
+                    await f.write(content)
                     
             return True
             
@@ -228,12 +233,15 @@ class FileStorage(Storage[T]):
             )
     
     async def delete(self, key: str) -> bool:
-        """Delete an item from file storage."""
+        """Delete an item from file storage using async operations."""
         path = self._get_path(key)
         
         try:
             if path.exists():
-                os.remove(path)
+                # Use thread executor for file deletion to avoid blocking
+                import asyncio
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, os.remove, path)
                 return True
             return False
             
@@ -251,25 +259,32 @@ class FileStorage(Storage[T]):
         return path.exists()
     
     async def list_keys(self, prefix: Optional[str] = None) -> List[str]:
-        """List all keys in file storage."""
+        """List all keys in file storage with async directory operations."""
         try:
-            extensions = [".json"] if self.serializer == "json" else [".pkl"]
+            import asyncio
+            loop = asyncio.get_running_loop()
             
-            # Get all files with the correct extension
-            files = []
-            for ext in extensions:
-                files.extend(self.base_dir.glob(f"*{ext}"))
+            # Use thread executor for directory operations
+            def _list_files():
+                extensions = [".json"] if self.serializer == "json" else [".pkl"]
                 
-            # Extract keys from filenames
-            keys = []
-            for file in files:
-                key = file.stem  # Remove extension
-                
-                # Filter by prefix if provided
-                if prefix is None or key.startswith(prefix):
-                    keys.append(key)
+                # Get all files with the correct extension
+                files = []
+                for ext in extensions:
+                    files.extend(self.base_dir.glob(f"*{ext}"))
                     
-            return keys
+                # Extract keys from filenames
+                keys = []
+                for file in files:
+                    key = file.stem  # Remove extension
+                    
+                    # Filter by prefix if provided
+                    if prefix is None or key.startswith(prefix):
+                        keys.append(key)
+                        
+                return keys
+            
+            return await loop.run_in_executor(None, _list_files)
             
         except Exception as e:
             logger.error(f"Error listing keys in file storage: {e}")
@@ -280,11 +295,17 @@ class FileStorage(Storage[T]):
             )
     
     async def clear(self) -> bool:
-        """Clear all items from file storage."""
+        """Clear all items from file storage using async operations."""
         try:
-            # Remove and recreate the directory
-            shutil.rmtree(self.base_dir)
-            os.makedirs(self.base_dir, exist_ok=True)
+            import asyncio
+            loop = asyncio.get_running_loop()
+            
+            # Use thread executor for directory operations
+            def _clear_directory():
+                shutil.rmtree(self.base_dir)
+                os.makedirs(self.base_dir, exist_ok=True)
+            
+            await loop.run_in_executor(None, _clear_directory)
             return True
             
         except Exception as e:
