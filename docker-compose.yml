@@ -15,7 +15,7 @@ volumes:
 
 services:
   
-  # Shared Infrastructure - PostgreSQL Database
+  # Shared Infrastructure - PostgreSQL Database (optional - remove if using AWS RDS)
   postgres:
     image: postgres:16-alpine
     container_name: hrbot-postgres
@@ -43,6 +43,9 @@ services:
     
     networks:
       - hrbot-network
+    
+    profiles:
+      - local-db
 
   # Jordan (jo) Instance
   hrbot-jo:
@@ -51,41 +54,60 @@ services:
       dockerfile: Dockerfile
       target: runtime
       args:
-        APP_INSTANCE: jo  # Build arg for instance specification
+        APP_INSTANCE: jo
     
     image: hrbot:jo-latest
     container_name: hrbot-jo
     restart: unless-stopped
     
     ports:
-      - "3978:3978"  # Keep as 3978 for JO
+      - "3978:3978"
     
-    # Load environment from .env.jo file
     env_file:
       - .env.jo
     
-    # Override specific settings for Docker environment
     environment:
-      # Docker-specific overrides
-      - APP_INSTANCE=jo   # Runtime env override
+      - APP_INSTANCE=jo
       - HOSTNAME=hrbot-jo
       - PYTHONPATH=/app/src
+      - HOST=0.0.0.0
       - PORT=3978
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
     
     volumes:
       - hrbot-data:/app/data
       - hrbot-logs-jo:/app/logs
     
-    
     healthcheck:
-      test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
+      test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot-jo,environment=${DEBUG:-production}"
+    
     networks:
       - hrbot-network
+    
+    security_opt:
+      - no-new-privileges:true
     
     profiles:
       - jo
@@ -100,41 +122,60 @@ services:
       dockerfile: Dockerfile
       target: runtime
       args:
-        APP_INSTANCE: us  # Build arg for instance specification
+        APP_INSTANCE: us
     
     image: hrbot:us-latest
     container_name: hrbot-us
     restart: unless-stopped
     
     ports:
-      - "3979:3979"  # Different port for US
+      - "3979:3979"
     
-    # Load environment from .env.us file
     env_file:
       - .env.us
     
-    # Override specific settings for Docker environment
     environment:
-      # Docker-specific overrides
-      - APP_INSTANCE=us   # Runtime env override
+      - APP_INSTANCE=us
       - HOSTNAME=hrbot-us
       - PYTHONPATH=/app/src
+      - HOST=0.0.0.0
       - PORT=3979
-      
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
       
     volumes:
       - hrbot-data:/app/data
       - hrbot-logs-us:/app/logs
     
     healthcheck:
-      test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
+      test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot-us,environment=${DEBUG:-production}"
+    
     networks:
       - hrbot-network
+    
+    security_opt:
+      - no-new-privileges:true
     
     profiles:
       - us

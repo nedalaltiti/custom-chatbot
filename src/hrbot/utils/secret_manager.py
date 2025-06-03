@@ -79,15 +79,15 @@ def get_database_credentials(
     try:
         credentials = get_aws_secret(secret_name, region_name)
         
-        # Map AWS secret keys to our expected format
+        # Normalize/strip whitespace to avoid connection issues (e.g. stray newlines)
         db_config = {
-            "username": credentials.get("USERNAME"),
-            "password": credentials.get("PASSWORD"), 
-            "host": credentials.get("HOST"),
-            "port": str(credentials.get("PORT", "5432")),
-            "database": credentials.get("DATABASE_NAME"),
-            "schema": credentials.get("SCHEMA_NAME"),
-            "sslmode": "disable"  # This database doesn't support SSL
+            "username": (credentials.get("USERNAME") or "").strip(),
+            "password": (credentials.get("PASSWORD") or "").strip(), 
+            "host": (credentials.get("HOST") or "").strip(),
+            "port": str(credentials.get("PORT", "5432")).strip(),
+            "database": (credentials.get("DATABASE_NAME") or "").strip(),
+            "schema": (credentials.get("SCHEMA_NAME") or "").strip(),
+            "sslmode": (credentials.get("SSLMODE") or "disable").strip().lower() or "disable"
         }
         
         # Validate required fields

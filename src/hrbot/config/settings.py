@@ -100,21 +100,22 @@ class GeminiSettings:
 
     @classmethod
     def from_environment(cls) -> "GeminiSettings":
-        # Prefer AWS Secrets Manager unless explicitly disabled
-        use_aws_secrets = get_env_var_bool("USE_AWS_SECRETS", True)
-        credentials_path = None
-        
-        if use_aws_secrets:
+        # Prefer AWS Secrets Manager *only* when explicitly enabled AND a secret name is provided
+        use_aws_secrets_global = get_env_var_bool("USE_AWS_SECRETS", True)
+        secret_name = get_env_var("AWS_GEMINI_SECRET_NAME")  # No default – skip if not set
+
+        credentials_path: Optional[str] = None
+
+        if use_aws_secrets_global and secret_name:
             try:
                 from hrbot.utils.secret_manager import load_gemini_credentials, get_aws_region
-                
+
                 # Get AWS configuration
                 region = get_aws_region()
-                secret_name = get_env_var("AWS_GEMINI_SECRET_NAME", "genai-gemini-vertex-prod-api")
-                
+
                 logger.info(f"Loading Gemini credentials from AWS Secrets Manager: {secret_name}")
                 credentials_path = load_gemini_credentials(secret_name, region)
-                
+
                 return cls(
                     model_name=get_env_var("GEMINI_MODEL_NAME", cls.model_name),
                     temperature=get_env_var_float("GEMINI_TEMPERATURE", cls.temperature),
@@ -123,11 +124,13 @@ class GeminiSettings:
                     use_aws_secrets=True,
                     credentials_path=credentials_path,
                 )
-                
+
             except Exception as e:
                 logger.error(f"Failed to load Gemini credentials from AWS Secrets Manager: {e}")
                 logger.info("Falling back to environment variables for Gemini configuration")
                 # Fall through to environment variable method
+        elif use_aws_secrets_global and not secret_name:
+            logger.info("AWS_GEMINI_SECRET_NAME not set – skipping Gemini secret retrieval and using env vars/API key if available")
         
         # Default: Use environment variables
         return cls(
