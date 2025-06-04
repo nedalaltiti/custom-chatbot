@@ -15,35 +15,6 @@ volumes:
 
 services:
   
-  # Shared Infrastructure - PostgreSQL Database
-  postgres:
-    image: postgres:16-alpine
-    container_name: hrbot-postgres
-    restart: unless-stopped
-    
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-hrbot}
-      POSTGRES_USER: ${POSTGRES_USER:-hrbot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hrbot123}
-      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-    
-    ports:
-      - "5432:5432"
-    
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
-    
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hrbot} -d ${POSTGRES_DB:-hrbot}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    
-    networks:
-      - hrbot-network
-
   # Jordan (jo) Instance
   hrbot-jo:
     build:
@@ -51,55 +22,67 @@ services:
       dockerfile: Dockerfile
       target: runtime
       args:
-        APP_INSTANCE: jo  # Build arg for instance specification
+        APP_INSTANCE: jo
     
     image: hrbot:jo-latest
     container_name: hrbot-jo
     restart: unless-stopped
     
     ports:
-      - "3978:3978"  # Keep as 3978 for JO
+      - "3978:3978"
     
-    # Load environment from .env.jo file
-    env_file:
-      - .env.jo
+    # env_file:
+    #   - .env.jo
     
-    # Override specific settings for Docker environment
     environment:
-      # Docker-specific overrides
-      - APP_INSTANCE=jo   # Runtime env override
+      - APP_INSTANCE=jo
       - HOSTNAME=hrbot-jo
       - PYTHONPATH=/app/src
-      
-      # Force local database for Docker (override .env.jo if needed)
-      - USE_AWS_SECRETS=false
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=hrbot
-      - DB_USER=hrbot
-      - DB_PASSWORD=hrbot123
-      - DB_SSLMODE=disable
-      
-      # Ensure correct port for JO instance
+      - HOST=0.0.0.0
       - PORT=3978
+      # AWS credentials and configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      # Let .env.jo file handle AWS secret names
+      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      # Local development overrides
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
     
     volumes:
       - hrbot-data:/app/data
       - hrbot-logs-jo:/app/logs
     
-    depends_on:
-      postgres:
-        condition: service_healthy
-    
     healthcheck:
-      test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
+      test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot-jo,environment=${DEBUG:-production}"
+    
     networks:
       - hrbot-network
+    
+    security_opt:
+      - no-new-privileges:true
     
     profiles:
       - jo
@@ -114,55 +97,67 @@ services:
       dockerfile: Dockerfile
       target: runtime
       args:
-        APP_INSTANCE: us  # Build arg for instance specification
+        APP_INSTANCE: us
     
     image: hrbot:us-latest
     container_name: hrbot-us
     restart: unless-stopped
     
     ports:
-      - "3979:3979"  # Different port for US
+      - "3979:3979"
     
-    # Load environment from .env.us file
-    env_file:
-      - .env.us
+    # env_file:
+    #   - .env.us
     
-    # Override specific settings for Docker environment
     environment:
-      # Docker-specific overrides
-      - APP_INSTANCE=us   # Runtime env override
+      - APP_INSTANCE=us
       - HOSTNAME=hrbot-us
       - PYTHONPATH=/app/src
-      
-      # Force local database for Docker (override .env.us if needed)
-      - USE_AWS_SECRETS=false
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=hrbot
-      - DB_USER=hrbot
-      - DB_PASSWORD=hrbot123
-      - DB_SSLMODE=disable
-      
-      # Ensure correct port for US instance
+      - HOST=0.0.0.0
       - PORT=3979
+      # AWS credentials and configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      # Let .env.us file handle AWS secret names
+      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      # Local development overrides
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
     
     volumes:
       - hrbot-data:/app/data
       - hrbot-logs-us:/app/logs
     
-    depends_on:
-      postgres:
-        condition: service_healthy
-    
     healthcheck:
-      test: [\"CMD\", \"python\", \"/app/scripts/healthcheck.py\"]
+      test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot-us,environment=${DEBUG:-production}"
+    
     networks:
       - hrbot-network
+    
+    security_opt:
+      - no-new-privileges:true
     
     profiles:
       - us
