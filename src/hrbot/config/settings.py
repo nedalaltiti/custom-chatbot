@@ -43,10 +43,21 @@ class DatabaseSettings:
     
     @classmethod
     def from_environment(cls) -> "DatabaseSettings":
+        import os
+        
+        # Check if database initialization should be skipped
+        skip_db_init = os.environ.get("SKIP_DB_INIT", "").lower() in ("true", "1", "yes")
+        
         # Prefer AWS Secrets Manager unless the caller explicitly disables it
         use_aws_secrets = get_env_var_bool("USE_AWS_SECRETS", True)
         
-        if use_aws_secrets:
+        # Enhanced debugging
+        logger.info(f"=== DATABASE CONFIGURATION DEBUG ===")
+        logger.info(f"SKIP_DB_INIT: {skip_db_init}")
+        logger.info(f"USE_AWS_SECRETS: {use_aws_secrets}")
+        logger.info(f"AWS_DB_SECRET_NAME: {os.environ.get('AWS_DB_SECRET_NAME', 'NOT_SET')}")
+        
+        if use_aws_secrets and not skip_db_init:
             try:
                 from hrbot.utils.secret_manager import get_database_credentials, get_aws_region
                 
@@ -54,10 +65,10 @@ class DatabaseSettings:
                 region = get_aws_region()
                 secret_name = get_env_var("AWS_DB_SECRET_NAME", "chatbot-clarity-db-dev-postgres")
                 
-                logger.info(f"Loading database credentials from AWS Secrets Manager: {secret_name}")
+                logger.info(f"Attempting to load database credentials from AWS Secrets Manager: {secret_name}")
                 db_creds = get_database_credentials(secret_name, region)
                 
-                return cls(
+                result = cls(
                     name=db_creds["database"],
                     user=db_creds["username"],
                     password=db_creds["password"],
@@ -70,24 +81,114 @@ class DatabaseSettings:
                     pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
                 )
                 
+                logger.info(f"✅ AWS Database config: host={result.host}, port={result.port}, database={result.name}")
+                logger.info(f"Database URL: {result.url}")
+                return result
+                
             except Exception as e:
-                logger.error(f"Failed to load database credentials from AWS Secrets Manager: {e}")
+                logger.error(f"❌ Failed to load database credentials from AWS Secrets Manager: {e}")
+                
+                # If USE_AWS_SECRETS=true but AWS fails, we don't want to fall back to local DB
+                # Instead, provide a dummy configuration that will fail gracefully at runtime
+                if use_aws_secrets:
+                    logger.error("AWS Secrets Manager is enabled but failed. Application will not start.")
+                    logger.error("Please check your AWS credentials and network connectivity.")
+                    logger.error("To use local database instead, set USE_AWS_SECRETS=false")
+                    
+                    # Return dummy configuration that will cause a clear error at runtime
+                    result = cls(
+                        name="aws_rds_unavailable",
+                        user="aws_rds_unavailable", 
+                        password="aws_rds_unavailable",
+                        host="aws_rds_unavailable",
+                        port=5432,
+                        sslmode="disable",
+                        pool_size=get_env_var_int("DB_POOL_SIZE", 5),
+                        max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
+                        pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
+                        pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
+                    )
+                    
+                    logger.error(f"Using dummy config: {result.url}")
+                    return result
+                
                 logger.info("Falling back to environment variables for database configuration")
-                # Fall through to environment variable method
+                # Fall through to environment variable method only if USE_AWS_SECRETS=false
         
-        # Default: Use environment variables
-        return cls(
-            name=get_env_var("DB_NAME"),
-            user=get_env_var("DB_USER"),
-            password=get_env_var("DB_PASSWORD"),
-            host=get_env_var("DB_HOST"),
+        # Get database settings from environment variables
+        db_name = get_env_var("DB_NAME") 
+        db_user = get_env_var("DB_USER")
+        db_password = get_env_var("DB_PASSWORD")
+        db_host = get_env_var("DB_HOST")
+        
+        # Enhanced environment variable debugging
+        logger.info(f"=== ENVIRONMENT VARIABLE FALLBACK ===")
+        logger.info(f"DB_NAME: {db_name or 'NOT_SET'}")
+        logger.info(f"DB_USER: {db_user or 'NOT_SET'}")
+        logger.info(f"DB_PASSWORD: {'SET' if db_password else 'NOT_SET'}")
+        logger.info(f"DB_HOST: {db_host or 'NOT_SET'}")
+        logger.info(f"DB_PORT: {os.environ.get('DB_PORT', 'NOT_SET')}")
+        
+        # Provide safe fallbacks when database initialization is skipped
+        if skip_db_init:
+            logger.info("SKIP_DB_INIT=true - using dummy database configuration")
+            result = cls(
+                name=db_name or "dummy",
+                user=db_user or "dummy",
+                password=db_password or "dummy",
+                host=db_host or "localhost",  # Use localhost to avoid DNS issues
+                port=get_env_var_int("DB_PORT", 5432),
+                sslmode=get_env_var("DB_SSLMODE", "disable"),
+                pool_size=get_env_var_int("DB_POOL_SIZE", 5),
+                max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
+                pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
+                pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
+            )
+            logger.info(f"Skip DB config: {result.url}")
+            return result
+        
+        # Default: Use environment variables with validation
+        if not all([db_name, db_user, db_password, db_host]):
+            missing = [name for name, val in [("DB_NAME", db_name), ("DB_USER", db_user), 
+                                            ("DB_PASSWORD", db_password), ("DB_HOST", db_host)] if not val]
+            
+            # Only require local DB variables if USE_AWS_SECRETS=false
+            if not use_aws_secrets:
+                raise ValueError(f"Missing required database environment variables: {missing}")
+            else:
+                # If AWS is enabled but failed, and no local variables, return dummy config
+                logger.warning("AWS Secrets Manager failed and no local DB variables provided")
+                result = cls(
+                    name="placeholder",
+                    user="placeholder",
+                    password="placeholder", 
+                    host="placeholder",
+                    port=5432,
+                    sslmode="disable",
+                    pool_size=get_env_var_int("DB_POOL_SIZE", 5),
+                    max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
+                    pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
+                    pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
+                )
+                logger.warning(f"Placeholder config: {result.url}")
+                return result
+            
+        result = cls(
+            name=db_name,
+            user=db_user,
+            password=db_password,
+            host=db_host,
             port=get_env_var_int("DB_PORT", 5432),
-            sslmode=get_env_var("DB_SSLMODE", "disable"),  # Only used when not leveraging AWS Secrets
+            sslmode=get_env_var("DB_SSLMODE", "disable"),
             pool_size=get_env_var_int("DB_POOL_SIZE", 5),
             max_overflow=get_env_var_int("DB_MAX_OVERFLOW", 10),
             pool_timeout=get_env_var_int("DB_POOL_TIMEOUT", 30),
             pool_recycle=get_env_var_int("DB_POOL_RECYCLE", 1800),
         )
+        
+        logger.info(f"✅ Environment variable config: host={result.host}, port={result.port}, database={result.name}")
+        logger.info(f"Database URL: {result.url}")
+        return result
     
 @dataclass(frozen=True)
 class GeminiSettings:
@@ -100,21 +201,22 @@ class GeminiSettings:
 
     @classmethod
     def from_environment(cls) -> "GeminiSettings":
-        # Prefer AWS Secrets Manager unless explicitly disabled
-        use_aws_secrets = get_env_var_bool("USE_AWS_SECRETS", True)
-        credentials_path = None
-        
-        if use_aws_secrets:
+        # Prefer AWS Secrets Manager *only* when explicitly enabled AND a secret name is provided
+        use_aws_secrets_global = get_env_var_bool("USE_AWS_SECRETS", True)
+        secret_name = get_env_var("AWS_GEMINI_SECRET_NAME")  # No default – skip if not set
+
+        credentials_path: Optional[str] = None
+
+        if use_aws_secrets_global and secret_name:
             try:
                 from hrbot.utils.secret_manager import load_gemini_credentials, get_aws_region
-                
+
                 # Get AWS configuration
                 region = get_aws_region()
-                secret_name = get_env_var("AWS_GEMINI_SECRET_NAME", "genai-gemini-vertex-prod-api")
-                
+
                 logger.info(f"Loading Gemini credentials from AWS Secrets Manager: {secret_name}")
                 credentials_path = load_gemini_credentials(secret_name, region)
-                
+
                 return cls(
                     model_name=get_env_var("GEMINI_MODEL_NAME", cls.model_name),
                     temperature=get_env_var_float("GEMINI_TEMPERATURE", cls.temperature),
@@ -123,11 +225,13 @@ class GeminiSettings:
                     use_aws_secrets=True,
                     credentials_path=credentials_path,
                 )
-                
+
             except Exception as e:
                 logger.error(f"Failed to load Gemini credentials from AWS Secrets Manager: {e}")
                 logger.info("Falling back to environment variables for Gemini configuration")
                 # Fall through to environment variable method
+        elif use_aws_secrets_global and not secret_name:
+            logger.info("AWS_GEMINI_SECRET_NAME not set – skipping Gemini secret retrieval and using env vars/API key if available")
         
         # Default: Use environment variables
         return cls(
@@ -155,16 +259,34 @@ class EmbeddingSettings:
 class TeamsSettings:
     app_id: Optional[str] = None
     app_password: Optional[str] = None
-    tenant_id: Optional[str] = None
+    tenant_id: Optional[str] = None  # Shared Azure AD tenant ID for all app instances
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
 
     @classmethod
     def from_environment(cls) -> "TeamsSettings":
+        # With separate .env files, we now use generic environment variables
+        # The appropriate .env.jo or .env.us file should be loaded based on the instance
+        
+        app_id = get_env_var("APP_ID") or get_env_var("MICROSOFT_APP_ID")
+        app_password = get_env_var("APP_PASSWORD") or get_env_var("MICROSOFT_APP_PASSWORD")
+        
+        try:
+            from hrbot.config.app_config import get_current_app_config
+            app_config = get_current_app_config()
+            logger.info(f"Loading Teams settings for app instance: {app_config.name}")
+        except Exception as e:
+            logger.warning(f"Could not get app config context: {e}")
+        
+        if app_id:
+            logger.info("Using APP_ID from environment")
+        else:
+            logger.warning("No APP_ID found in environment")
+                
         return cls(
-            app_id=get_env_var("MICROSOFT_APP_ID"),
-            app_password=get_env_var("MICROSOFT_APP_PASSWORD"),
-            tenant_id=get_env_var("TENANT_ID"),
+            app_id=app_id,
+            app_password=app_password,
+            tenant_id=get_env_var("TENANT_ID"),  # Same tenant for all app instances
             client_id=get_env_var("CLIENT_ID"),
             client_secret=get_env_var("CLIENT_SECRET"),
         )
@@ -200,10 +322,19 @@ class HRSupportSettings:
 
     @classmethod
     def from_environment(cls) -> "HRSupportSettings":
-        return cls(
-            url=get_env_var("HR_SUPPORT_URL", cls.url),
-            domain=get_env_var("HR_SUPPORT_DOMAIN", cls.domain),
-        )
+        try:
+            from hrbot.config.app_config import get_current_app_config
+            app_config = get_current_app_config()
+            return cls(
+                url=get_env_var("HR_SUPPORT_URL", app_config.hr_support_url),
+                domain=get_env_var("HR_SUPPORT_DOMAIN", app_config.hr_support_url.split("//")[1].split("/")[0]),
+            )
+        except ImportError:
+            # Fallback if app config module not available (during initial setup)
+            return cls(
+                url=get_env_var("HR_SUPPORT_URL", cls.url),
+                domain=get_env_var("HR_SUPPORT_DOMAIN", cls.domain),
+            )
 
 @dataclass(frozen=True)
 class AWSSettings:
@@ -231,8 +362,8 @@ class PerformanceSettings:
     min_streaming_length: int = 200  # Lowered from 400 to enable streaming for more responses
     show_acknowledgment_threshold: int = 10  # Show "looking into it" for queries > 10 words
     enable_streaming: bool = True  # Enable/disable streaming responses
-    streaming_delay: float = 1.2  # Delay between chunks (Microsoft requires 1+ seconds)
-    max_chunk_size: int = 150  # Maximum characters per chunk for optimal readability
+    streaming_delay: float = 0.8  # Reduced delay for faster streaming (Microsoft minimum)
+    max_chunk_size: int = 120  # Reduced for faster perception
     
     # Semantic similarity settings for HR topic detection
     hr_similarity_threshold: float = 0.55  # Lowered to be less restrictive for HR topics
@@ -241,7 +372,7 @@ class PerformanceSettings:
     # Enhanced document processing settings
     chunk_size: int = 1500  # Increased for more comprehensive chunks
     chunk_overlap: int = 300  # Increased overlap to preserve context
-    max_chunks_per_query: int = 12  # More chunks for comprehensive responses
+    max_chunks_per_query: int = 8  # Reduced for faster retrieval
     enable_table_extraction: bool = True  # Extract tables from PDFs
     enable_structure_preservation: bool = True  # Preserve document structure
     ocr_fallback: bool = False  # Use OCR for scanned documents (requires tesseract)

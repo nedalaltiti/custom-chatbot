@@ -1,70 +1,68 @@
-version: '3.8'
-
 networks:
   hrbot-network:
     driver: bridge
     name: hrbot-network
 
 volumes:
-  # Persistent data storage
   hrbot-data:
     name: hrbot-data
-  hrbot-logs:
-    name: hrbot-logs
-  hrbot-knowledge:
-    name: hrbot-knowledge
+  postgres-data:
+    name: hrbot-postgres-data
+  hrbot-logs-jo:
+    name: hrbot-logs-jo
+  hrbot-logs-us:
+    name: hrbot-logs-us
 
 services:
-  hrbot:
+  
+  # Jordan (jo) Instance
+  hrbot-jo:
     build:
       context: .
       dockerfile: Dockerfile
       target: runtime
       args:
-        POETRY_VERSION: 1.6.1
-        APP_USER: hrbot
-        APP_UID: 1000
-        APP_GID: 1000
+        APP_INSTANCE: jo
     
-    image: hrbot:latest
-    container_name: hrbot-app
-    
-    # Restart policy for reliability
+    image: hrbot:jo-latest
+    container_name: hrbot-jo
     restart: unless-stopped
     
-    # Port mapping
     ports:
-      - "3978:3978"  # Teams Bot port
+      - "3978:3978"
     
-    # Load environment from .env file
-    env_file:
-      - .env
+    # env_file:
+    #   - .env.jo
     
-    # Additional environment variables (these complement your .env file)
     environment:
-      # Container-specific settings
+      - APP_INSTANCE=jo
+      - HOSTNAME=hrbot-jo
       - PYTHONPATH=/app/src
-      - PATH=/app/.venv/bin:$$PATH
-      
-      # Ensure host binding for container
       - HOST=0.0.0.0
       - PORT=3978
+      # AWS credentials and configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      - AWS_REGION=${AWS_REGION:-us-west-1}
+      # Let .env.jo file handle AWS secret names
+      # - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      # - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      # Local development overrides
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
     
-    # Volume mounts for persistent data
     volumes:
       - hrbot-data:/app/data
-      - hrbot-logs:/app/logs
-      - hrbot-knowledge:/app/data/knowledge
+      - hrbot-logs-jo:/app/logs
     
-    # Health check - matches Dockerfile format
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3978/health')"]
+      test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     
-    # Resource limits
     deploy:
       resources:
         limits:
@@ -74,21 +72,120 @@ services:
           memory: 512M
           cpus: '0.25'
     
-    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service=hrbot,environment=${DEBUG:-production}"
+        labels: "service=hrbot-jo,environment=${DEBUG:-production}"
     
-    # Network
     networks:
       - hrbot-network
     
-    # Security options
     security_opt:
       - no-new-privileges:true
     
-    # User configuration (non-root) - matches Dockerfile
-    user: "1000:1000"
+    profiles:
+      - jo
+      - multi-app
+      - development
+      - default
+
+  # US Instance
+  hrbot-us:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        APP_INSTANCE: us
+    
+    image: hrbot:us-latest
+    container_name: hrbot-us
+    restart: unless-stopped
+    
+    ports:
+      - "3979:3979"
+    
+    # env_file:
+    #   - .env.us
+    
+    environment:
+      - APP_INSTANCE=us
+      - HOSTNAME=hrbot-us
+      - PYTHONPATH=/app/src
+      - HOST=0.0.0.0
+      - PORT=3979
+      # AWS credentials and configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      - AWS_REGION=${AWS_REGION:-us-west-1}
+      # Let .env.us file handle AWS secret names
+      # - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      # - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      # Local development overrides
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
+    
+    volumes:
+      - hrbot-data:/app/data
+      - hrbot-logs-us:/app/logs
+    
+    healthcheck:
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot-us,environment=${DEBUG:-production}"
+    
+    networks:
+      - hrbot-network
+    
+    security_opt:
+      - no-new-privileges:true
+    
+    profiles:
+      - us
+      - multi-app
+      - development
+
+  # Nginx Reverse Proxy (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: hrbot-nginx
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    
+    depends_on:
+      - hrbot-jo
+      - hrbot-us
+    
+    networks:
+      - hrbot-network
+    
+    profiles:
+      - multi-app
+      - production
