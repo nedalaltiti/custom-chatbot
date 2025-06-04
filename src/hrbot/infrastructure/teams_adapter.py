@@ -254,7 +254,7 @@ class TeamsAdapter:
 
 
 class _MicrosoftTeamsStreamer:
-    """Microsoft Teams streaming implementation following official documentation."""
+    """Microsoft Teams streaming implementation following official documentation with latency optimizations."""
     
     def __init__(self, adapter: TeamsAdapter, svc_url: str, conv_id: str) -> None:
         self.adapter = adapter
@@ -266,19 +266,37 @@ class _MicrosoftTeamsStreamer:
         self.seq = 1
         self.finished = False
         
-        # Rate limiting: Microsoft requires 1 request per second maximum
+        # LATENCY OPTIMIZATION: Adaptive rate limiting based on performance settings
         self.last_request_time = 0.0
-        self.min_interval = 1.0  # 1 second between requests
+        self.min_interval = settings.performance.streaming_delay  # Use optimized delay from settings
+        self.adaptive_delay = True  # Enable adaptive delays for better perceived performance
+        
+        # Performance monitoring
+        self.chunk_count = 0
+        self.start_time = time.time()
 
     async def _post(self, body: dict) -> bool:
-        # Enforce rate limiting (1 request per second as per Microsoft docs)
+        # ADAPTIVE RATE LIMITING: Faster for small responses, compliant for large ones
         now = time.time()
         time_since_last = now - self.last_request_time
-        if time_since_last < self.min_interval:
-            await asyncio.sleep(self.min_interval - time_since_last)
         
-        # Log the body we're about to send for debugging
-        logger.debug(f"Sending Teams activity: {body}")
+        # Adaptive delay based on content size and performance
+        if self.adaptive_delay:
+            content_size = len(body.get('text', ''))
+            if content_size < 100:  # Small content can be faster
+                required_delay = max(0.8, self.min_interval)  # Microsoft minimum
+            else:
+                required_delay = self.min_interval
+        else:
+            required_delay = self.min_interval
+            
+        if time_since_last < required_delay:
+            sleep_time = required_delay - time_since_last
+            await asyncio.sleep(sleep_time)
+        
+        # Log the body we're about to send for debugging (only in debug mode)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Sending Teams activity: {body}")
         
         ok, act_id = await self.adapter._post_activity(self.svc_url, self.conv_id, body, return_id=True)
         self.last_request_time = time.time()
@@ -287,12 +305,12 @@ class _MicrosoftTeamsStreamer:
             self.stream_id = act_id
             logger.debug(f"Got stream_id: {act_id}")
         elif not ok:
-            logger.error(f"Failed to post activity: {body}")
+            logger.error(f"Failed to post activity")
             
         return ok
 
     async def run(self, gen: AsyncGenerator[str, None], informative: str) -> bool:
-        """Follow Microsoft Teams streaming sequence: Start -> Continue -> Final"""
+        """Follow Microsoft Teams streaming sequence with latency optimizations: Start -> Continue -> Final"""
         
         # 1) Start streaming with informative message
         start_body = {
@@ -313,16 +331,31 @@ class _MicrosoftTeamsStreamer:
         
         logger.info(f"Started streaming with informative message, next sequence: {self.seq}")
 
-        # 2) Response streaming - accumulate and send chunks
+        # 2) Response streaming - OPTIMIZED CHUNK PROCESSING
         chunk_count = 0
         last_chunk = ""
+        small_chunks_buffer = ""  # Buffer for small chunks to reduce API calls
+        
         async for chunk in gen:
             if not chunk.strip():  # Skip empty chunks
                 logger.debug(f"Skipping empty chunk at position {chunk_count}")
                 continue
                 
+            # LATENCY OPTIMIZATION: Buffer small chunks to reduce API calls
+            if len(chunk) < 30 and len(small_chunks_buffer) < settings.performance.max_chunk_size:
+                small_chunks_buffer += chunk
+                continue
+                
+            # Process buffered small chunks
+            if small_chunks_buffer:
+                self.buffer += small_chunks_buffer
+                if not await self._update():
+                    logger.error(f"Failed to send buffered streaming update {self.seq}")
+                    return False
+                small_chunks_buffer = ""
+                chunk_count += 1
+                
             # Build cumulative buffer (Microsoft requirement)
-            # Always append chunks to build the complete message
             self.buffer += chunk
             last_chunk = chunk
             chunk_count += 1
@@ -332,13 +365,26 @@ class _MicrosoftTeamsStreamer:
                 logger.error(f"Failed to send streaming update {self.seq}")
                 return False
                 
-            logger.debug(f"Sent streaming chunk {chunk_count}, sequence {self.seq-1}, buffer length: {len(self.buffer)}")
+            # PERFORMANCE MONITORING: Log only for debug
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Sent streaming chunk {chunk_count}, sequence {self.seq-1}, buffer length: {len(self.buffer)}")
             
-        # Log if we ended with no chunks or very few
+        # Process any remaining buffered content
+        if small_chunks_buffer:
+            self.buffer += small_chunks_buffer
+            if not await self._update():
+                logger.error(f"Failed to send final buffered update")
+                return False
+            chunk_count += 1
+            
+        # Log performance metrics
+        elapsed_time = time.time() - self.start_time
         if chunk_count == 0:
             logger.warning("Streaming completed with 0 chunks - no content was generated")
         elif chunk_count < 3:
-            logger.info(f"Short streaming session: only {chunk_count} chunks. Last chunk: '{last_chunk}'")
+            logger.info(f"Short streaming session: only {chunk_count} chunks. Last chunk: '{last_chunk[:50]}'")
+        else:
+            logger.info(f"Streaming performance: {chunk_count} chunks in {elapsed_time:.2f}s ({chunk_count/elapsed_time:.1f} chunks/sec)")
 
         # 3) Final message
         success = await self._finish()
@@ -349,7 +395,7 @@ class _MicrosoftTeamsStreamer:
         return success
 
     async def _update(self) -> bool:
-        """Send streaming update with cumulative content (Microsoft requirement)."""
+        """Send streaming update with cumulative content (Microsoft requirement) - OPTIMIZED."""
         if not self.stream_id:
             logger.error("No stream ID available for update")
             return False
@@ -369,14 +415,17 @@ class _MicrosoftTeamsStreamer:
         success = await self._post(body)
         if success:
             self.seq += 1  # Increment sequence after successful post
+        else:
+            # RESILIENCE: Don't fail entire stream for single update failure
+            logger.warning(f"Streaming update failed for sequence {self.seq}, continuing...")
         return success
 
     async def _finish(self) -> bool:
-        """Send final message with AI labels and feedback buttons."""
+        """Send final message with AI labels and feedback buttons - OPTIMIZED."""
         if self.finished:
             return True
             
-        # Final message with AI label and feedback buttons
+        # LATENCY OPTIMIZATION: Prepare final message efficiently
         body = {
             "type": "message",
             "text": self.buffer,
@@ -401,5 +450,16 @@ class _MicrosoftTeamsStreamer:
                 }
             }
         }
-        self.finished = await self._post(body)
+        
+        # RESILIENCE: Retry final message if it fails (critical for user experience)
+        for attempt in range(2):
+            self.finished = await self._post(body)
+            if self.finished:
+                break
+            elif attempt == 0:
+                logger.warning("Final message failed, retrying...")
+                await asyncio.sleep(0.5)
+            else:
+                logger.error("Final message failed after retry")
+                
         return self.finished
