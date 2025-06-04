@@ -136,6 +136,18 @@ ENV/
 env.bak/
 venv.bak/
 
+.env
+.env.local
+.env.jordan
+.env.jo
+.env.us
+.env.production
+.env.staging
+.env.development
+
+# Keep example file
+!.env.example
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -173,3 +185,10 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 gemini-deployment-fe9ea6bb8c92.jsondata/embeddings/*
+.env
+*.pyc
+__pycache__/
+
+# never commit env files
+.env*
+

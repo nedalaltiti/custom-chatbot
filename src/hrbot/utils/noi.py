@@ -3,6 +3,9 @@ import logging
 from typing import Dict, Optional, List
 from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.utils.result import Result, Success, Error
+from hrbot.config.app_config import get_current_app_config, is_feature_enabled
+
+
 logger = logging.getLogger(__name__)
 # Define the NOI link
 NOI_LINK = 'https://usclarity.sharepoint.com/sites/HRJordan/Lists/Notice%20of%20Investigation%20NOI/AllItems.aspx?ct=1742897751496&or=Teams%2DHL&LOF=1'
@@ -11,13 +14,20 @@ class NOIAccessChecker:
     """
     Checks if users have access to submit a Notice of Investigation (NOI)
     based on their job title retrieved from Microsoft Graph API.
+
+    This feature is app instance-aware and will be disabled for regions that don't support NOI.
     """
     _MANAGERIAL_KEYWORDS_LOWERCASE: List[str] = ['chief', 'manager', 'supervisor', 'director']
     _NOI_KEYWORDS_LOWERCASE: List[str] = ['noi', 'notice of investigation', 'violation']
     def __init__(self):
         """Initialize the NOI access checker with TeamsAdapter."""
         self.teams_adapter = TeamsAdapter()
-        logger.info("NOI Access Checker initialized with TeamsAdapter")
+        self.app_config = get_current_app_config()
+        logger.info(f"NOI Access Checker initialized for app instance: {self.app_config.name}")
+        
+        if not self.app_config.supports_noi:
+            logger.info(f"NOI feature is disabled for app instance: {self.app_config.name}")
+
     def is_managerial_position(self, title: Optional[str]) -> bool:
         """
         Check if a job title is considered a managerial position.
@@ -36,6 +46,7 @@ class NOIAccessChecker:
                 return True
         logger.info(f"Job title '{title}' is not a managerial position.")
         return False
+    
     async def get_user_title(self, user_id: str) -> str: 
         """
         Get a user's job title from Microsoft Graph API using TeamsAdapter.
@@ -67,17 +78,34 @@ class NOIAccessChecker:
     async def check_access(self, user_id: str, job_title: Optional[str] = None) -> Dict:
         """
         Check if a user has access to submit a Notice of Investigation.
+        Returns app-aware response - if NOI is disabled for the app instance,
+        returns appropriate message.
         Args:
             user_id: The user's Azure AD Object ID
             job_title: Optional pre-fetched job title
         Returns:
             dict: A response containing the user's job title and access status
         """
+        # Check if NOI feature is enabled for this app instance
+        if not self.app_config.supports_noi:
+            logger.info(f"NOI feature disabled for app instance {self.app_config.name}, user: {user_id}")
+            return {
+                'has_access': False,
+                'job_title': job_title or "Unknown",
+                'response': (
+                    f"Notice of Investigation (NOI) is not available for the {self.app_config.name}. "
+                    f"For any concerns or policy violations, please contact your HR team directly: "
+                    f"{self.app_config.hr_support_url}"
+                ),
+                'feature_disabled': True
+            }
+        
         # Use provided job title if available, otherwise fetch from Teams
         current_job_title = job_title if job_title else await self.get_user_title(user_id)
         
         logger.info(f"Checking NOI access for user '{user_id}' with job title: '{current_job_title}'")
         has_access = self.is_managerial_position(current_job_title)
+        
         if has_access:
             response_message = (
                 f'Your current position is: {current_job_title}\n\n'
@@ -90,19 +118,26 @@ class NOIAccessChecker:
                 'You do not have direct access to submit a Notice of Investigation. \n\n'
                 'Please contact your direct manager for assistance.'
             )
+        
         return {
             'has_access': has_access,
             'job_title': current_job_title,
-            'response': response_message
+            'response': response_message,
+            'feature_disabled': False
         }
     @staticmethod
     def is_noi_related(message: str) -> bool:
         """
         Check if a message is related to NOI requests.
+        Only returns True if NOI feature is enabled for the current app instance.
         Args:
             message: The message to check
         Returns:
-            bool: True if the message is NOI-related, False otherwise
+            bool: True if the message is NOI-related and feature is enabled, False otherwise
         """
+        # First check if NOI feature is enabled for current app instance
+        if not is_feature_enabled("noi"):
+            return False
+            
         message_lower = message.lower()
         return any(keyword in message_lower for keyword in NOIAccessChecker._NOI_KEYWORDS_LOWERCASE)

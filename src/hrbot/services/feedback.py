@@ -27,6 +27,9 @@ def save_feedback(user_id, session_id, rating, comment="", ):
     _ensure_feedback_file()
     
     try:
+        # Import here to avoid circular imports
+        from hrbot.utils.bot_name import get_bot_name
+        
         # Read existing feedback
         with open(FEEDBACK_FILE, "r") as f:
             try:
@@ -36,8 +39,8 @@ def save_feedback(user_id, session_id, rating, comment="", ):
         
         # Add new feedback
         feedback_data.append({
-            "id": uuid.uuid4(),
-            "bot_name": "hrbot",
+            "id": str(uuid.uuid4()),  # Convert to string for JSON serialization
+            "bot_name": get_bot_name(),  # Use app-aware bot name
             "env": "production",
             "channel": "teams",
             "user_id": user_id,
