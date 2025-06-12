@@ -3,7 +3,7 @@ BRAND = {
     "accent":  "#46B2FF",   # Sky
     "bg":      "#F6F9FC",   # Off-white
     # Replace with real hosted logo URL
-    "logo_url": "https://media.licdn.com/dms/image/v2/D4E0BAQEGjhiqYFMfew/company-logo_200_200/company-logo_200_200/0/1722803877919/wuduh_logo?e=1753315200&v=beta&t=XPwYpKBCeW0kwIYG-wdKDbLoNYEx8eIcOZdCHCYfURc",
+    "logo_url": "https://media.licdn.com/dms/image/v2/D4E0BAQG0T9_TYmxmIA/company-logo_200_200/company-logo_200_200/0/1711378838842/claritydebtresolutioninc_logo?e=2147483647&v=beta&t=Utk6QkPTBRcH6HSRINip1Em7EWDDX5AVZ1qrPJ7QWmE",
 }
 
 
