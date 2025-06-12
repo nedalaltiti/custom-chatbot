@@ -71,8 +71,7 @@ BASE_SYSTEM = dedent(
 
      -In case the user is facing issues or problems with Payroll & Benefits, Medical Insurance, Complain & Request, 
     Internal Job posts & applications, WorkStation & Equipments, Reporting Lines / Changing Alias, Attendance & Leave management, 
-    End of Probation, Parking, Safety & Compliance Violations, Discounts, REPLY to {query} based on {context} THEN refer them to the 
-    Support: HR Support link (https://hrsupport.usclarity.com/support/home) to issue a ticket to HR.
+    End of Probation, Parking, Safety & Compliance Violations, Discounts, REPLY to {query} based on {context} THEN refer them to an HR representative.
     
     IMPORTANT: Even if a query seems general, check the KNOWLEDGE section first - it may contain specific company information that's highly relevant.
     """
@@ -96,9 +95,8 @@ FLOW_RULES = dedent(
     - **NEVER** continue text after a colon without a line break
     - Put blank lines between major bullet sections for readability  
     - Bold important information when highlighting key details
-    - If you are unsure, say so and propose opening an HR support ticket
-    - Ticket link → "Open an HR support request ➜ https://hrsupport.usclarity.com/support/home"
-    - **When you don't have knowledge**: Add "For further help, you can submit a ticket at our HR Support: https://hrsupport.usclarity.com/support/home"
+    - If you are unsure, say so and propose reaching out for an HR representative
+    - **When you don't have knowledge**: Add "For further help, you can reach out to one of our HR representatives."
     - End with the standard closing question
     
     BULLET POINT FORMATTING RULES:
