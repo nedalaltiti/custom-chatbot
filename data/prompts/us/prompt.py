@@ -25,7 +25,6 @@ BASE_SYSTEM = dedent(
     - **High Confidence**: KNOWLEDGE contains direct answers → Provide comprehensive information with ALL relevant details
     - **Medium Confidence**: KNOWLEDGE contains related information → Use available info and provide complete context
     - **Low Confidence**: KNOWLEDGE has minimal relevance → Acknowledge limitation but offer general HR guidance
-    - **No Knowledge**: When you don't have information about the topic → Include HR support link for further assistance
     
     WHEN TO USE KNOWLEDGE:
     - Employee benefits (insurance, discounts, perks)
