@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from hrbot.api.routers import admin, feedback, health, teams
+from hrbot.api.routers import admin, feedback, health, teams, debug
 from hrbot.config.settings import settings
 from hrbot.utils.di import get_vector_store         
 from hrbot.infrastructure.ingest import refresh_vector_index 
@@ -177,7 +177,8 @@ if settings.cors_origins:   # don't enable CORS unless explicitly configured
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
-app.include_router(admin.router,  prefix="/admin", tags=["admin"])
+app.include_router(admin.router,  prefix="/api/admin", tags=["admin"])
+app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 
 @app.exception_handler(BaseError)
 async def hrbot_error_handler(_: Request, exc: BaseError) -> JSONResponse:
