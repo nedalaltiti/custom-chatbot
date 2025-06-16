@@ -36,10 +36,6 @@ class SessionTracker:
         self._last_seen[user_id] = datetime.now(timezone.utc)
         return self._current[user_id]
 
-        # touch last-seen timestamp
-        self._last_seen[user_id] = datetime.now(timezone.utc)
-        return self._current[user_id]
-
     def end_session(self, user_id: str) -> None:
         """Explicitly close the session (called when feedback is submitted)."""
         self._current.pop(user_id, None)
