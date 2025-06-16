@@ -1,4 +1,4 @@
-"""Database connection management for MovemintX Collector.
+"""
 
 This module provides functionality to establish and manage database connections.
 """
