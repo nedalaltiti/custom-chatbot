@@ -219,7 +219,7 @@ async def test_rag(query: dict):
     try:
         # Import here to avoid circular imports
         from hrbot.core.rag.engine import RAG
-        from hrbot.core.rag_adapter import LLMServiceAdapter
+        from hrbot.core.adapters.llm_gemini import LLMServiceAdapter
         from hrbot.services.gemini_service import GeminiService
 
         llm_adapter = LLMServiceAdapter(GeminiService())
