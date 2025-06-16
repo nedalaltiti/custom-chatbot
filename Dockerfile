@@ -127,15 +127,16 @@ USER ${APP_USER}
 EXPOSE 3978
 
 # Use dynamic health check script
-COPY --chown=${APP_USER}:${APP_USER} scripts/healthcheck.py ./healthcheck.py
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python /app/healthcheck.py || exit 1
+
+# COPY --chown=${APP_USER}:${APP_USER} scripts/healthcheck.py ./healthcheck.py
+# HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+#     CMD python /app/healthcheck.py || exit 1
 
 # Use tini as init system for proper signal handling
-ENTRYPOINT ["/usr/bin/tini", "--", "./docker-entrypoint.sh"]
+# ENTRYPOINT ["/usr/bin/tini", "--", "./docker-entrypoint.sh"]
 
 # Default will be overridden by entrypoint script
-CMD ["python", "-m", "uvicorn", "hrbot.api.app:app"]
+# CMD ["python", "-m", "uvicorn", "hrbot.api.app:app"]
 
 # Metadata labels
 LABEL maintainer="Nedal Al-titi <nedal.altiti@live.com>" \
