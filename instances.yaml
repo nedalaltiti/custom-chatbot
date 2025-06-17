@@ -3,6 +3,7 @@ instances:
     name: "Jo HR Assistant"
     supports_noi: true
     hr_support_url: "https://hrsupport.usclarity.com/support/home"
+    logo_url: "https://media.licdn.com/dms/image/v2/D4E0BAQEGjhiqYFMfew/company-logo_200_200/company-logo_200_200/0/1722803877919/wuduh_logo?e=2147483647&v=beta&t=pVWTQppOJAt3V2suiss8Gf5TE9xWpeLoxRqG8HyZeTY"
     hostname_patterns:
       - "hr-chatbot-jo-*"
       - "*-jo-*"
@@ -11,7 +12,7 @@ instances:
   us:
     name: "US HR Assistant" 
     supports_noi: false
-    hr_support_url: "https://hrsupport.usclarity.com/support/home"
+    logo_url: "https://media.licdn.com/dms/image/v2/D4E0BAQG0T9_TYmxmIA/company-logo_200_200/company-logo_200_200/0/1711378838842/claritydebtresolutioninc_logo?e=2147483647&v=beta&t=Utk6QkPTBRcH6HSRINip1Em7EWDDX5AVZ1qrPJ7QWmE"
     hostname_patterns:
       - "hr-chatbot-us-*"
       - "*-us-*"
