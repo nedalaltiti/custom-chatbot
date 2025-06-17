@@ -41,6 +41,7 @@ class AppConfig:
     embeddings_dir: Path
     prompt_dir: Path
     hr_support_url: str
+    logo_url: Optional[str] = None
     supports_noi: bool = False
     hostname_patterns: List[str] = None
     default_instance: bool = False
@@ -91,7 +92,6 @@ class AppInstanceManager:
                 'us': {
                     'name': 'US HR Assistant', 
                     'supports_noi': False,
-                    'hr_support_url': 'https://hrsupport.usclarity.com/support/home',
                     'hostname_patterns': ['hr-chatbot-us-*', '*-us-*'],
                     'default': False
                 }
@@ -135,6 +135,7 @@ class AppInstanceManager:
                 embeddings_dir=embeddings_dir,
                 prompt_dir=prompt_dir,
                 hr_support_url=instance_data.get('hr_support_url', 'https://hrsupport.usclarity.com/support/home'),
+                logo_url=instance_data.get('logo_url'),
                 supports_noi=instance_data.get('supports_noi', False),
                 hostname_patterns=instance_data.get('hostname_patterns', []),
                 default_instance=instance_data.get('default', False)
@@ -168,6 +169,7 @@ class AppInstanceManager:
                 embeddings_dir=Path('data/embeddings/jo'),
                 prompt_dir=Path('data/prompts/jo'),
                 hr_support_url='https://hrsupport.usclarity.com/support/home',
+                logo_url='https://media.licdn.com/dms/image/v2/D4E0BAQEGjhiqYFMfew/company-logo_200_200/company-logo_200_200/0/1722803877919/wuduh_logo?e=2147483647&v=beta&t=pVWTQppOJAt3V2suiss8Gf5TE9xWpeLoxRqG8HyZeTY',
                 supports_noi=True,
                 hostname_patterns=['hr-chatbot-jo-*', '*-jo-*'],
                 default_instance=True
@@ -178,7 +180,7 @@ class AppInstanceManager:
                 knowledge_base_dir=Path('data/knowledge/us'),
                 embeddings_dir=Path('data/embeddings/us'),
                 prompt_dir=Path('data/prompts/us'),
-                hr_support_url='https://hrsupport.usclarity.com/support/home',
+                logo_url='https://media.licdn.com/dms/image/v2/D4E0BAQG0T9_TYmxmIA/company-logo_200_200/company-logo_200_200/0/1711378838842/claritydebtresolutioninc_logo?e=2147483647&v=beta&t=Utk6QkPTBRcH6HSRINip1Em7EWDDX5AVZ1qrPJ7QWmE',
                 supports_noi=False,
                 hostname_patterns=['hr-chatbot-us-*', '*-us-*'],
                 default_instance=False
