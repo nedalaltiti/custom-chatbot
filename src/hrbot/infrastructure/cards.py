@@ -88,15 +88,15 @@ def create_welcome_card(user_name: str = "there") -> dict:
     }
 
 
-def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True, existing_comment: str = ""):
+def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True, existing_comment: str = "", message_id: int | None = None):
     """Create a feedback card rendered as a single horizontal row of 1-5 stars.
-
     • Each star is a Column with a TextBlock (⭐ or ☆) and a selectAction so it
       behaves like a button but has *no* default Teams border.
     • When a user taps a star we send `Action.Submit` with `action=submit_rating` &
       the chosen rating value. The router will re-render this same card with the
       selected stars filled.
     • existing_comment: Preserves user's typed comment content when updating the card
+    • message_id: Associates feedback with a specific message
     """
 
     def star_column(idx: int) -> dict:
@@ -157,7 +157,11 @@ def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True, 
                 "type": "Action.Submit",
                 "title": "Provide Feedback",
                 "style": "positive",
-                "data": {"action": "submit_feedback", "rating": selected_rating or 0}
+                "data": {
+                    "action": "submit_feedback",
+                    "rating": selected_rating or 0,
+                    **({"messageId": message_id} if message_id else {})
+                }
             }
         ]
     }
