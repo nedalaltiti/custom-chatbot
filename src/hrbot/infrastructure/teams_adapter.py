@@ -215,15 +215,20 @@ class TeamsAdapter:
         conversation_id: str,
         text_generator,
         informative: str = "I'm analyzing your request...",
-    ) -> bool:
-        """Stream message following Microsoft Teams streaming requirements."""
+    ) -> tuple[bool, Optional[str]]:
+        """Stream message following Microsoft Teams streaming requirements.
+        
+        Returns:
+            tuple: (success: bool, activity_id: Optional[str])
+        """
         streamer = _MicrosoftTeamsStreamer(self, service_url, conversation_id)
         try:
-            await streamer.run(text_generator, informative=informative)
-            return True
+            success = await streamer.run(text_generator, informative=informative)
+            activity_id = streamer.stream_id if success else None
+            return success, activity_id
         except Exception as exc:
             logger.error("stream_message error: %s", exc)
-            return False
+            return False, None
 
     async def _post_activity(
         self,
