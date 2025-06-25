@@ -786,6 +786,41 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 logger.debug("Streaming completed successfully but no activity ID returned")
             else:
                 logger.warning("Streaming failed, falling back to traditional method")
+                # Fallback to traditional method
+                result = await chat_processor.process_message(
+                    user_message,
+                    chat_history=[m["content"] for m in memory.messages[:-1]],
+                    user_id=user_id,
+                    system_override=system_override
+                )
+                if result.is_success():
+                    answer = result.unwrap()["response"].strip()
+                    memory.add_ai_message(answer)
+                    state["last_bot_response_time"] = datetime.utcnow()
+                    intent = classification_service.get_message_intent(analysis)
+                    
+                    # Check if the response already contains "anything else?" question
+                    has_anything_else = _HAS_ANYTHING_ELSE_RE.search(answer)
+                    if has_anything_else:
+                        # Set state to await response
+                        state["awaiting_more_help"] = True
+                    
+                    # Store bot message and get its database ID
+                    bot_msg_id = await _persist_bot_msg(user_msg_id, answer, intent)
+                    
+                    # Send message and get Teams activity ID
+                    activity_id = await adapter.send_message(service_url, conv_id, answer)
+                    
+                    # Track the mapping for feedback
+                    if bot_msg_id and activity_id:
+                        feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
+                        logger.debug(f"Tracked streaming fallback mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
+                else:
+                    # Fallback message
+                    await adapter.send_message(
+                        service_url, conv_id,
+                        "Sorry, I hit a glitch. Please try again later."
+                    )
                 
         except Exception as e:
             logger.error(f"Streaming error: {e}, falling back to regular processing")
