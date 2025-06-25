@@ -914,6 +914,8 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 service_url, conv_id,
                 "Sorry, I hit a glitch. Please try again later."
             )
+        
+    return TeamsActivityResponse(text="")
 
 
 # Debug endpoint models and implementation for QA team
@@ -1038,30 +1040,6 @@ async def debug_chat(req: DebugChatRequest):
             confidence=0.0,
             processing_time=round(processing_time, 2)
         )
-
-
-# @router.post("/teams/feedback")
-# async def handle_feedback(payload: dict):
-#     message_reply_id = payload.get('messageReplyId')
-    
-#     if not message_reply_id:
-#         logger.warning(
-#             "Feedback invoke received without a message_id. Payload: %s",
-#             payload
-#         )
-#         return {"status": "error", "message": "message_id is required"}
-        
-#     feedback_data = {
-#         "message_id": message_reply_id,
-#         "reaction": payload.get("actionValue", {}).get("reaction"),
-#         "feedback": payload.get("actionValue", {}).get("feedback")
-#     }
-    
-#     # Process feedback
-#     await store_feedback(feedback_data)
-    
-#     return {"status": "success"}
-
 
 def _clear_user_session(user_id: str):
     """Clear per-user memory, state, and feedback tracking.
