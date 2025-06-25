@@ -191,5 +191,106 @@ async def handle_card_action(request: Request):
         logger.error(f"Error processing card action: {str(e)}")
         return {"status": "error", "message": str(e)} 
     
+class ReplyMessageFeedback(BaseModel):
+    message_id: int
+    feedback: str
+    feedback_comment: Optional[str] = None
+
+@router.post("/reply")
+async def reply_message_feedback(
+    feedback_response: ReplyMessageFeedback,
+):
+    """Submit feedback for a specific message reply."""
+    try:
+        logger.info(f"Received feedback for message reply {feedback_response.message_id}: {feedback_response.feedback}")
+        
+        success = await feedback_service.record_message_reply_feedback(
+            message_id=feedback_response.message_id,
+            feedback=feedback_response.feedback,
+            feedback_comment=feedback_response.feedback_comment or ""
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save feedback")
+        
+        return {"status": "success", "message": "Feedback recorded for message reply"}
+        
+    except Exception as e:
+        logger.error(f"Error processing message reply feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process feedback: {str(e)}")
+
+@router.post("/reply-card-action")
+async def reply_card_action(request: Request, background_tasks: BackgroundTasks):
+    """Handle adaptive card actions for message reply feedback."""
+    try:
+        data = await request.json()
+        logger.info(f"Received card action for reply: {data}")
+
+        # Extract key information
+        service_url = data.get("serviceUrl")
+        conversation_id = data.get("conversation", {}).get("id")
+        message_id = data.get("value", {}).get("message_id")
+
+        if not all([service_url, conversation_id, message_id]):
+            logger.error("Missing required fields in card action for reply")
+            return {"status": "error", "message": "Missing required fields"}
+
+        value = data.get("value", {})
+        action_type = value.get("action")
+
+        if action_type == "submit_feedback":
+            feedback = value.get("feedback")  # "like" or "dislike"
+            feedback_comment = value.get("comment", "")
+
+            try:
+                # Record the feedback
+                success = await feedback_service.record_message_reply_feedback(
+                    message_id=message_id,
+                    feedback=feedback,
+                    feedback_comment=feedback_comment,
+                )
+
+                if not success:
+                    raise Exception("Failed to save feedback")
+                
+                # Send thank you message based on feedback type
+                message = {
+                    "like": "Thank you for your positive feedback! We're glad you had a good experience.",
+                    "neutral": "Thank you for your feedback. We're always working to improve our services.",
+                    "dislike": "Thank you for your feedback. We're sorry your experience wasn't better, and we'll work to improve."
+                }.get(feedback, "Thank you for your feedback.")
+                
+                background_tasks.add_task(
+                    teams_adapter.send_message,
+                    service_url,
+                    conversation_id,
+                    message
+                )
+                
+                return {"status": "success"}
+                
+            except Exception as e:
+                logger.error(f"Error recording feedback: {str(e)}")
+                await teams_adapter.send_message(
+                    service_url,
+                    conversation_id,
+                    "There was an error processing your feedback. Please try again."
+                )
+                return {"status": "error", "message": str(e)}
+        
+        elif action_type == "dismiss_feedback":
+            await teams_adapter.send_message(
+                service_url,
+                conversation_id,
+                "No problem! Feel free to provide feedback another time."
+            )
+            return {"status": "success"}
+            
+        return {"status": "success"}
+        
+    except Exception as e:
+        logger.error(f"Error processing card action: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
 
 

@@ -10,7 +10,7 @@ from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.config.settings import settings
 from hrbot.infrastructure.cards import create_feedback_card
 from sqlalchemy.exc import SQLAlchemyError
-from hrbot.db.models import Rating
+from hrbot.db.models import Rating, MessageReplyFeedback
 from hrbot.db.session import get_db_session_context
 from hrbot.utils.bot_name import get_bot_name
 
@@ -23,6 +23,9 @@ class FeedbackService:
         self.user_activity = {}     # user_id: last_activity_time - tracks user activity
         self.feedback_sent = set()  # user_ids who already received feedback this session
         
+        # Mapping from Teams activity ID to bot message database ID
+        self.activity_to_message_id = {}  # teams_activity_id: bot_message_db_id
+        
         # Default settings
         self.default_timeout_minutes = getattr(settings.feedback, 'feedback_timeout_minutes', 10)
         self.activity_check_interval = 30  # Check user activity every 30 seconds
@@ -34,6 +37,30 @@ class FeedbackService:
         """
         self.user_activity[user_id] = datetime.utcnow()
         logger.debug(f"Tracked activity for user {user_id}")
+
+    def track_activity_to_message_mapping(self, teams_activity_id: str, bot_message_db_id: int):
+        """
+        Track the mapping between Teams activity ID and bot message database ID.
+        
+        Args:
+            teams_activity_id: The Teams activity ID returned from send_message
+            bot_message_db_id: The database ID of the bot message
+        """
+        if teams_activity_id and bot_message_db_id:
+            self.activity_to_message_id[teams_activity_id] = bot_message_db_id
+            logger.debug(f"Mapped Teams activity {teams_activity_id} to bot message DB ID {bot_message_db_id}")
+
+    def get_bot_message_id_from_activity(self, teams_activity_id: str) -> int | None:
+        """
+        Get the bot message database ID from a Teams activity ID.
+        
+        Args:
+            teams_activity_id: The Teams activity ID
+            
+        Returns:
+            The bot message database ID, or None if not found
+        """
+        return self.activity_to_message_id.get(teams_activity_id)
 
     def schedule_delayed_feedback(self, user_id: str, service_url: str, conversation_id: str, delay_minutes: int = None):
         """
@@ -294,3 +321,48 @@ class FeedbackService:
                 if (now - activity_time).total_seconds() < 3600  # last hour only
             }
         }
+    async def record_message_reply_feedback(self, message_id: int, feedback: str = "", feedback_comment: str = "") -> MessageReplyFeedback | None:
+        """
+        Record feedback for a specific message reply.
+        
+        Args:
+            message_id: ID of the message reply (can be Teams activity ID or bot message DB ID)
+            feedback: feedback rating (like/dislike)
+            feedback_comment: Optional comment on the reply
+            
+        Returns:
+            MessageReplyFeedback object or None if failed
+        """
+        utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            async with get_db_session_context() as session:
+                # Check if message_id is a Teams activity ID and convert to bot message DB ID
+                bot_message_db_id = self.get_bot_message_id_from_activity(str(message_id))
+                if bot_message_db_id:
+                    # Use the bot message database ID instead of Teams activity ID
+                    actual_message_id = bot_message_db_id
+                    logger.info(f"Converted Teams activity ID {message_id} to bot message DB ID {actual_message_id}")
+                else:
+                    # Assume it's already a bot message database ID
+                    actual_message_id = message_id
+                    logger.debug(f"Using message_id {message_id} as bot message DB ID (no mapping found)")
+                
+                row = MessageReplyFeedback(
+                    message_id = actual_message_id,
+                    feedback        = feedback,
+                    feedback_comment= feedback_comment,
+                    timestamp       = utc_naive,
+                )
+                session.add(row)
+                # Context manager automatically commits
+                
+                logger.info("Recorded reply feedback for message reply %s: %s '%s'", actual_message_id, feedback, feedback_comment if feedback_comment else "")
+                return row
+                
+        except SQLAlchemyError as exc:
+            logger.error("DB error saving reply feedback: %s", exc)
+            return None
+        except Exception as exc:
+            logger.error("Unexpected error saving reply feedback: %s", exc)
+            return None
+        
