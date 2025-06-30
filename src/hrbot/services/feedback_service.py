@@ -62,7 +62,7 @@ class FeedbackService:
         """
         return self.activity_to_message_id.get(teams_activity_id)
 
-    def schedule_delayed_feedback(self, user_id: str, service_url: str, conversation_id: str, delay_minutes: int = None):
+    def schedule_delayed_feedback(self, user_id: str, service_url: str, conversation_id: str, delay_minutes: int = None, on_card_sent=None):
         """
         Schedule feedback prompt after period of inactivity.
         
@@ -71,6 +71,7 @@ class FeedbackService:
             service_url: Teams service URL  
             conversation_id: Teams conversation ID
             delay_minutes: Minutes to wait for inactivity (default from settings)
+            on_card_sent: Optional callback to call with (conversation_id, activity_id) when card is sent
         """
         # Don't schedule if user already got feedback this session
         if user_id in self.feedback_sent:
@@ -88,12 +89,12 @@ class FeedbackService:
         # Track initial activity and schedule feedback
         self.track_user_activity(user_id)
         task = asyncio.create_task(
-            self._send_feedback_after_inactivity(user_id, service_url, conversation_id, delay)
+            self._send_feedback_after_inactivity(user_id, service_url, conversation_id, delay, on_card_sent)
         )
         self.pending_feedback[user_id] = task
         logger.info(f"Scheduled delayed feedback for user {user_id} after {delay} minutes of inactivity")
 
-    async def _send_feedback_after_inactivity(self, user_id: str, service_url: str, conversation_id: str, delay_minutes: int):
+    async def _send_feedback_after_inactivity(self, user_id: str, service_url: str, conversation_id: str, delay_minutes: int, on_card_sent=None):
         """
         Monitor user activity and send feedback after period of inactivity.
         
@@ -102,6 +103,7 @@ class FeedbackService:
             service_url: Teams service URL
             conversation_id: Teams conversation ID 
             delay_minutes: Minutes of inactivity required
+            on_card_sent: Optional callback to call with (conversation_id, activity_id) when card is sent
         """
         try:
             target_inactivity = timedelta(minutes=delay_minutes)
@@ -124,6 +126,8 @@ class FeedbackService:
                         if activity_id:
                             self.feedback_sent.add(user_id)
                             logger.info(f"Sent delayed feedback to user {user_id} after {delay_minutes} minutes of inactivity")
+                            if on_card_sent:
+                                on_card_sent(conversation_id, activity_id)
                         else:
                             logger.warning(f"Failed to send feedback to user {user_id}")
                     else:
