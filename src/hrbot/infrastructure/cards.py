@@ -150,12 +150,7 @@ def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True, 
         "actions": [
             {
                 "type": "Action.Submit",
-                "title": "Later",
-                "data": {"action": "dismiss_feedback"}
-            },
-            {
-                "type": "Action.Submit",
-                "title": "Provide Feedback",
+                "title": "Submit Feedback",
                 "style": "positive",
                 "data": {
                     "action": "submit_feedback",

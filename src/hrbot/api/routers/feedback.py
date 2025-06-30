@@ -152,28 +152,7 @@ async def handle_card_action(request: Request):
                 logger.info(f"Recording feedback from user {user_id}: rating={rating}, comments='{comments}'")
                 feedback_service.record_feedback(user_id, rating, comments)
                 
-                # Send thank you message based on rating
-                if rating >= 4:
-                    # Positive response for high ratings
-                    await teams_adapter.send_message(
-                        service_url, 
-                        conversation_id, 
-                        "Thank you for your positive feedback! We're glad you had a good experience with our HR Assistant."
-                    )
-                elif rating <= 2:
-                    # Apologetic response for low ratings
-                    await teams_adapter.send_message(
-                        service_url, 
-                        conversation_id, 
-                        "Thank you for your feedback. We're sorry your experience wasn't better, and we'll work to improve."
-                    )
-                else:
-                    # Neutral response for middle ratings
-                    await teams_adapter.send_message(
-                        service_url, 
-                        conversation_id, 
-                        "Thank you for your feedback. We're always working to improve our services."
-                    )
+                # Thank you message removed for star feedback
                 return {"status": "ok"}
                 
             except Exception as e:
