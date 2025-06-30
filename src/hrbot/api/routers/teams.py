@@ -501,16 +501,6 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                     session_id= conv_id,
                 )
 
-                # Thank-you message
-                if rating >= 4:
-                    thank_msg = f"Thank you for the {rating}-star rating! We're glad you had a great experience."
-                elif rating <= 2:
-                    thank_msg = "Thank you for your feedback. We're sorry it wasn't better—we'll work on improving!"
-                else:
-                    thank_msg = "Thank you! We appreciate your feedback and are always improving."
-
-                await adapter.send_message(service_url, conv_id, thank_msg)
-
                 # Replace the card with a non-interactive "submitted" card
                 submitted_card = {
                     "type": "AdaptiveCard",
@@ -806,7 +796,11 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     if classification_service.should_schedule_delayed_feedback(analysis):
         if not feedback_service.has_received_feedback(user_id):
             delay_minutes = classification_service.get_feedback_delay_minutes(analysis)
-            feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, delay_minutes=delay_minutes)
+            # Pass a callback to update feedback_cards[conv_id] when the card is sent
+            def on_card_sent(conv_id, activity_id):
+                if activity_id:
+                    feedback_cards[conv_id] = activity_id
+            feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, delay_minutes=delay_minutes, on_card_sent=on_card_sent)
             logger.info(f"Scheduled delayed feedback for user {user_id} in {delay_minutes} minutes")
 
     user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
