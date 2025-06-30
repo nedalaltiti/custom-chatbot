@@ -133,7 +133,7 @@ async def _ensure_user_message_saved(user_message: str, user_id: str, session_id
     return user_msg_id
 
 
-@router.post("/", response_model=TeamsActivityResponse)
+@router.post("/")
 async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundTasks):
     user_message = req.text or ""
     user_id      = req.from_.id
@@ -206,209 +206,342 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     # Handle ALL invoke requests to prevent "Unable to reach app" errors
     if req.type == 'invoke':
         try:
-            logger.info(f"Invoke request received: type={req.type}, name={req.name}, value={req.value}")
+            logger.info(f"🔍 INVOKE DEBUG: type={req.type}, name={req.name}")
+            logger.info(f"🔍 INVOKE VALUE: {req.value}")
+            logger.info(f"🔍 INVOKE REPLY_TO_ID: {req.reply_to_id}")
+            logger.info(f"🔍 INVOKE ACTIVITY_ID: {req.activity_id}")
             
             # Handle any feedback action regardless of format
             action_data = req.value or {}
             
-            # Multiple ways feedback might be submitted
-            is_feedback = (
-                req.name == 'message/submitAction' or
-                action_data.get('actionName') == 'feedback' or
-                'reaction' in action_data or
-                'feedback' in str(action_data).lower()
+            # Check for Teams built-in feedback patterns (message-level feedback from thumbs up/down)
+            is_builtin_feedback = (
+                req.name in ['message/feedbackSubmit', 'feedbackLoop', 'message/feedback', 'message/executeAction'] or
+                'feedbackLoop' in action_data or
+                (req.name == 'message/submitAction' and action_data.get('actionName') == 'feedback' and 'actionValue' in action_data) or
+                (req.name == 'message/executeAction' and 'feedback' in str(action_data).lower())
             )
             
+            # Check for custom feedback patterns (our adaptive cards - session-level feedback)
+            is_custom_feedback = (
+                req.name == 'message/submitAction' and
+                action_data.get('action') in ['submit_feedback', 'submit_rating', 'dismiss_feedback'] and
+                'actionName' not in action_data  # This distinguishes our cards from Teams built-in feedback
+            )
+            
+            is_feedback = is_builtin_feedback or is_custom_feedback
+            
+            logger.info(f"🔍 FEEDBACK CHECK: is_builtin={is_builtin_feedback}, is_custom={is_custom_feedback}, total={is_feedback}")
+            
             if is_feedback:
-                # Try different ways to extract feedback data
-                reaction = None
-                feedback_text = ""
-                
-                # Method 1: Standard actionValue format
-                action_value = action_data.get('actionValue', {})
-                if action_value:
-                    reaction = action_value.get('reaction')
-                    feedback_text = action_value.get('feedback', '')
-                
-                # Method 2: Direct in action_data
-                if not reaction:
-                    reaction = action_data.get('reaction')
-                    feedback_text = action_data.get('feedback', '')
-                
-                # Method 3: Nested in any sub-object
-                if not reaction:
-                    for key, value in action_data.items():
-                        if isinstance(value, dict):
-                            if 'reaction' in value:
-                                reaction = value['reaction']
-                                feedback_text = value.get('feedback', '')
-                                break
-                
-                # Default reaction if none found
-                if not reaction:
-                    reaction = 'like'  # Default to positive
-                
-                # Parse feedback text if it's JSON
-                if isinstance(feedback_text, str) and feedback_text.startswith('{'):
-                    try:
-                        import json
-                        feedback_data = json.loads(feedback_text)
-                        feedback_text = feedback_data.get('feedbackText', '')
-                    except:
-                        pass
-               
-                if message_id:
-                    try:
-                        standardized_feedback = str(reaction).lower()
+                # Handle built-in Teams feedback (thumbs up/down buttons)
+                if is_builtin_feedback:
+                    logger.info(f"🔵 Processing BUILT-IN Teams feedback (message-level)")
+                    
+                    # Extract feedback data from Teams message-level feedback format
+                    reaction = None
+                    feedback_text = ""
+                    
+                    # Teams sends message-level feedback in this format:
+                    # {'actionName': 'feedback', 'actionValue': {'reaction': 'dislike', 'feedback': '{"feedbackText":"bad"}'}}
+                    if action_data.get('actionName') == 'feedback' and 'actionValue' in action_data:
+                        action_value = action_data.get('actionValue', {})
+                        reaction = action_value.get('reaction')
                         
-                        await feedback_service.record_message_reply_feedback(
-                                message_id=int(message_id),
+                        # Extract feedback text from JSON string
+                        feedback_json = action_value.get('feedback', '{}')
+                        if isinstance(feedback_json, str):
+                            try:
+                                import json
+                                feedback_data = json.loads(feedback_json)
+                                feedback_text = feedback_data.get('feedbackText', '')
+                            except:
+                                feedback_text = feedback_json
+                        
+                    # Fallback extraction methods
+                    if not reaction:
+                        if 'feedbackLoop' in action_data:
+                            feedback_data = action_data.get('feedbackLoop', {})
+                            reaction = feedback_data.get('reaction') or feedback_data.get('type')
+                            feedback_text = feedback_data.get('comment', '')
+                        elif 'reaction' in action_data:
+                            reaction = action_data.get('reaction')
+                            feedback_text = action_data.get('comment', '')
+                    
+                    # Default if no specific reaction found
+                    if not reaction:
+                        reaction = 'like'  # Default assumption for successful invoke
+                    
+                    # Normalize reaction
+                    standardized_feedback = str(reaction).lower()
+                    if standardized_feedback in ['thumbsup', 'up', '👍', 'positive']:
+                        standardized_feedback = 'like'
+                    elif standardized_feedback in ['thumbsdown', 'down', '👎', 'negative']:
+                        standardized_feedback = 'dislike'
+                    
+                    logger.info(f"🔵 Built-in feedback: reaction={reaction} -> standardized={standardized_feedback}, text='{feedback_text}'")
+                    
+                    # For built-in Teams feedback, try to get the message they're responding to
+                    target_message_id = None
+                    
+                    # Method 1: Use reply_to_id if available
+                    if req.reply_to_id:
+                        # Try to find bot message that corresponds to this activity ID
+                        target_message_id = feedback_service.get_bot_message_id_from_activity(req.reply_to_id)
+                        if target_message_id:
+                            logger.info(f"🔵 Found target message via reply_to_id: {req.reply_to_id} -> {target_message_id}")
+                    
+                    # Record the feedback if we have a target message
+                    if target_message_id:
+                        try:
+                            await feedback_service.record_message_reply_feedback(
+                                message_id=target_message_id,
                                 feedback=standardized_feedback,
                                 feedback_comment=str(feedback_text).strip(),
                             )
-                        logger.info(f"Successfully recorded message reply feedback: message_id={message_id}, feedback={standardized_feedback}")
-                        
-                    except Exception as e:
-                        logger.error(f"Error recording feedback: {e}")
-                else:
-                    logger.warning(f"Feedback invoke received without a message_id. Payload: {req.value}")
+                            logger.info(f"🔵 Recorded built-in feedback for message {target_message_id}: {standardized_feedback}")
+                        except Exception as e:
+                            logger.error(f"🔴 Error recording built-in feedback: {e}")
+                    else:
+                        logger.info(f"🔵 Built-in feedback received but no target message found - recording as general feedback")
+                        # Record as general session feedback if we can't link to specific message
+                        try:
+                            await feedback_service.record_feedback(
+                                user_id=user_id,
+                                rating=5 if standardized_feedback == 'like' else 2,  # Convert to rating
+                                comment=feedback_text,
+                                session_id=conv_id,
+                            )
+                            logger.info(f"🔵 Recorded general feedback: {standardized_feedback}")
+                        except Exception as e:
+                            logger.error(f"🔴 Error recording general feedback: {e}")
+                    
+                    # CRITICAL: Return empty JSON object as per Microsoft Teams documentation
+                    # Teams built-in feedback requires exactly {} as response
+                    return {}
+                
+                # Handle our custom feedback cards (adaptive cards with submit actions)
+                elif is_custom_feedback:
+                    logger.info(f"🟢 Processing CUSTOM feedback card")
+                    
+                    # This is handled by the card action handlers below (submit_feedback, submit_rating, etc.)
+                    # Just log it for now and let it fall through to the card handlers
+                    logger.info(f"🟢 Custom feedback will be handled by card action handlers")
+                    
+                    # Let it fall through to card action handlers - they will return their own responses
 
-                # Send acknowledgment message
-                await adapter.send_message(
-                    service_url, conv_id,
-                    "Thank you for your feedback! 🙏"
-                )
-                
-                # Mark that feedback was given and END session immediately
-                state["feedback_shown"] = True
-                state["awaiting_feedback"] = False
-                
-                # Cancel any pending feedback tasks
-                feedback_service.cancel_pending_feedback(user_id)
-                
-                # End session immediately after feedback submission
-                _clear_user_session(user_id)
+                # NO acknowledgment message for any message-level feedback (like/dislike)
+                # Both built-in and custom message-level feedback should be silent
             else:
                 logger.info(f"Non-feedback invoke: {req.name}")
             
-            # Always return successful response for ANY invoke to prevent Teams errors
-            return TeamsActivityResponse(text="")
+            # Always return empty JSON object for ANY non-builtin invoke to prevent Teams errors
+            return {}
                 
         except Exception as e:
             logger.error(f"Error handling invoke request: {e}")
-            # Even on error, return success to prevent Teams UI errors
-            return TeamsActivityResponse(text="")
+            # Even on error, return empty JSON object to prevent Teams UI errors
+            return {}
+    
+    # Handle Teams Action.Execute requests (used by built-in feedback system)
+    elif req.name == 'message/executeAction':
+        try:
+            logger.info(f"🔴 TEAMS ACTION.EXECUTE: message/executeAction received")
+            logger.info(f"🔴 PAYLOAD: {req.value}")
+            
+            # This is Teams' Action.Execute from built-in feedback
+            # Return empty JSON object for Action.Execute
+            return {}
+            
+        except Exception as e:
+            logger.error(f"🔴 Error handling Teams Action.Execute: {e}")
+            # Always return empty JSON object to prevent Teams UI errors
+            return {}
+    
+    # Handle Teams built-in feedback form submissions (composeExtensions/submitAction)
+    elif req.name == 'composeExtensions/submitAction':
+        try:
+            logger.info(f"🔴 TEAMS BUILT-IN FEEDBACK: composeExtensions/submitAction received")
+            logger.info(f"🔴 PAYLOAD: {req.value}")
+            
+            # This is Teams' built-in feedback form submission
+            # The payload contains the user's feedback from the form
+            
+            feedback_data = req.value or {}
+            
+            # Extract feedback information
+            # Teams sends the feedback in various possible formats
+            user_feedback = ""
+            feedback_category = "general"
+            
+            # Try to extract the feedback text from various possible fields
+            for possible_field in ['feedback', 'comment', 'text', 'data', 'value']:
+                if possible_field in feedback_data and feedback_data[possible_field]:
+                    user_feedback = str(feedback_data[possible_field]).strip()
+                    break
+            
+            # If no direct feedback text, check nested objects
+            if not user_feedback:
+                for key, value in feedback_data.items():
+                    if isinstance(value, dict):
+                        for nested_key in ['feedback', 'comment', 'text']:
+                            if nested_key in value and value[nested_key]:
+                                user_feedback = str(value[nested_key]).strip()
+                                break
+                        if user_feedback:
+                            break
+            
+            logger.info(f"🔴 Extracted feedback: '{user_feedback}'")
+            
+            # Record the feedback in our database if we have content
+            if user_feedback:
+                try:
+                    # Record as general session feedback since it's from Teams' form
+                    await feedback_service.record_feedback(
+                        user_id=user_id,
+                        rating=3,  # Default neutral rating for text feedback
+                        comment=user_feedback,
+                        session_id=conv_id,
+                    )
+                    logger.info(f"🔴 Recorded Teams built-in feedback: '{user_feedback[:50]}...'")
+                except Exception as e:
+                    logger.error(f"🔴 Error recording Teams feedback: {e}")
+            
+            # CRITICAL: Return empty JSON object as per Microsoft Teams documentation
+            return {}
+            
+        except Exception as e:
+            logger.error(f"🔴 Error handling Teams built-in feedback: {e}")
+            # Always return empty JSON object to prevent Teams UI errors
+            return {}
     
     # Legacy invoke handling (keeping for compatibility)
     elif req.name == 'message/submitAction':
         try:
             logger.info(f"Legacy invoke handling: name={req.name}, value={req.value}")
-            return TeamsActivityResponse(text="")
+            return {}
         except Exception as e:
             logger.error(f"Error in legacy invoke handling: {e}")
-            return TeamsActivityResponse(text="")
+            return {}
     
     if req.value:
         action = req.value.get("action")
 
         if action == "submit_rating":
-            raw    = req.value.get("rating")
-            rating = int(raw) if str(raw).isdigit() else None
+            try:
+                raw    = req.value.get("rating")
+                rating = int(raw) if str(raw).isdigit() else None
 
-            if rating:
-                # Preserve existing comment content when updating card
-                existing_comment = req.value.get("comment", "").strip()
-                
-                # Highlight stars, keep the "Provide Feedback" button with preserved comment
-                card = create_feedback_card(
-                    selected_rating=rating,
-                    interactive=True,
-                    existing_comment=existing_comment
-                )
-                act_id = feedback_cards.get(conv_id)
-                if act_id:
-                    await adapter.update_card(service_url, conv_id, act_id, card)
-                else:
-                    new_act = await adapter.send_card(service_url, conv_id, card)
-                    if new_act:
-                        feedback_cards[conv_id] = new_act
+                if rating:
+                    # Preserve existing comment content when updating card
+                    existing_comment = req.value.get("comment", "").strip()
+                    
+                    # Highlight stars, keep the "Provide Feedback" button with preserved comment
+                    card = create_feedback_card(
+                        selected_rating=rating,
+                        interactive=True,
+                        existing_comment=existing_comment
+                    )
+                    act_id = feedback_cards.get(conv_id)
+                    if act_id:
+                        await adapter.update_card(service_url, conv_id, act_id, card)
+                    else:
+                        new_act = await adapter.send_card(service_url, conv_id, card)
+                        if new_act:
+                            feedback_cards[conv_id] = new_act
 
-                # Remember we showed the stars
-                state["feedback_shown"] = True
-                state["awaiting_feedback"] = False 
+                    # Remember we showed the stars
+                    state["feedback_shown"] = True
+                    state["awaiting_feedback"] = False 
+                    
+            except Exception as e:
+                logger.error(f"Error processing submit_rating: {e}")
 
             return TeamsActivityResponse(text="")
 
         if action == "dismiss_feedback":
-            await adapter.send_message(
-                service_url, conv_id,
-                "No problem! Feel free to reach out anytime you need HR assistance."
-            )
-            
-            # Remove current feedback card and end session
-            feedback_cards.pop(conv_id, None)
-            _clear_user_session(user_id)
+            try:
+                await adapter.send_message(
+                    service_url, conv_id,
+                    "No problem! Feel free to reach out anytime you need HR assistance."
+                )
+                
+                # Remove current feedback card and end session
+                feedback_cards.pop(conv_id, None)
+                _clear_user_session(user_id)
+                
+            except Exception as e:
+                logger.error(f"Error processing dismiss_feedback: {e}")
             
             return TeamsActivityResponse(text="")
 
         if action == "submit_feedback":
-            raw     = req.value.get("rating")
-            rating  = int(raw) if str(raw).isdigit() else 3
-            comment = (req.value.get("comment") or "").strip()
-            
-            # Also check for comment in nested structures
-            if not comment:
-                comment = (req.value.get("commentValue") or "").strip()
-            if not comment:
-                # Check if comment is in a nested data structure
-                for key, value in req.value.items():
-                    if isinstance(value, str) and len(value.strip()) > 0 and key.lower() in ['comment', 'feedback', 'text', 'message']:
-                        comment = value.strip()
-                        break
-            
-            logger.info(f"Processing feedback submission - user: {user_id}, rating: {rating}, comment: '{comment}'")
+            try:
+                raw     = req.value.get("rating")
+                rating  = int(raw) if str(raw).isdigit() else 3
+                comment = (req.value.get("comment") or "").strip()
+                
+                # Also check for comment in nested structures
+                if not comment:
+                    comment = (req.value.get("commentValue") or "").strip()
+                if not comment:
+                    # Check if comment is in a nested data structure
+                    for key, value in req.value.items():
+                        if isinstance(value, str) and len(value.strip()) > 0 and key.lower() in ['comment', 'feedback', 'text', 'message']:
+                            comment = value.strip()
+                            break
+                
+                logger.info(f"Processing feedback submission - user: {user_id}, rating: {rating}, comment: '{comment}'")
 
-            # Persist the feedback
-            await feedback_service.record_feedback(
-                user_id   = user_id,
-                rating    = rating,
-                comment   = comment,
-                session_id= conv_id,
-            )
+                # Persist the feedback
+                await feedback_service.record_feedback(
+                    user_id   = user_id,
+                    rating    = rating,
+                    comment   = comment,
+                    session_id= conv_id,
+                )
 
-            # Thank-you message
-            if rating >= 4:
-                thank_msg = f"Thank you for the {rating}-star rating! We're glad you had a great experience."
-            elif rating <= 2:
-                thank_msg = "Thank you for your feedback. We're sorry it wasn't better—we'll work on improving!"
-            else:
-                thank_msg = "Thank you! We appreciate your feedback and are always improving."
+                # Thank-you message
+                if rating >= 4:
+                    thank_msg = f"Thank you for the {rating}-star rating! We're glad you had a great experience."
+                elif rating <= 2:
+                    thank_msg = "Thank you for your feedback. We're sorry it wasn't better—we'll work on improving!"
+                else:
+                    thank_msg = "Thank you! We appreciate your feedback and are always improving."
 
-            await adapter.send_message(service_url, conv_id, thank_msg)
+                await adapter.send_message(service_url, conv_id, thank_msg)
 
-            # Replace the card with a non-interactive "submitted" card
-            submitted_card = {
-                "type": "AdaptiveCard",
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "version": "1.3",
-                "body": [
-                    {
-                        "type": "TextBlock",
-                        "text": "✅ Feedback submitted – thank you!",
-                        "weight": "Bolder",
-                        "size": "Medium"
-                    }
-                ]
-            }
-            act_id = feedback_cards.pop(conv_id, None)
-            if act_id:
-                await adapter.update_card(service_url, conv_id, act_id, submitted_card)
+                # Replace the card with a non-interactive "submitted" card
+                submitted_card = {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.3",
+                    "body": [
+                        {
+                            "type": "TextBlock",
+                            "text": "✅ Feedback submitted – thank you!",
+                            "weight": "Bolder",
+                            "size": "Medium"
+                        }
+                    ]
+                }
+                act_id = feedback_cards.pop(conv_id, None)
+                if act_id:
+                    await adapter.update_card(service_url, conv_id, act_id, submitted_card)
 
-            state["feedback_shown"] = True
-            state["awaiting_feedback"] = False 
-            
-            # End session immediately after feedback submission
-            _clear_user_session(user_id)
+                state["feedback_shown"] = True
+                state["awaiting_feedback"] = False 
+                
+                # End session immediately after feedback submission
+                _clear_user_session(user_id)
+                
+            except Exception as e:
+                logger.error(f"Error processing submit_feedback: {e}")
+                # Always send a success response to prevent "Unable to reach app" errors
+                try:
+                    await adapter.send_message(service_url, conv_id, "Thank you for your feedback!")
+                except Exception as send_error:
+                    logger.error(f"Failed to send fallback message: {send_error}")
 
             return TeamsActivityResponse(text="")
 
@@ -432,40 +565,16 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                         logger.info(f"Successfully recorded message reply feedback: message_id={message_id}, feedback={standardized_feedback}")
                         
                         # Send appropriate thank you message based on feedback
-                        if standardized_feedback == 'like':
-                            thank_you_msg = "Thank you for your positive feedback on this response! 👍"
-                        elif standardized_feedback == 'dislike':
-                            thank_you_msg = "Thank you for your feedback. We'll work to improve our responses. 🔄"
-                        else:
-                            thank_you_msg = "Thank you for your feedback! 🙏"
-                        
-                        # Send acknowledgment as a background task
-                        background_tasks.add_task(
-                            adapter.send_message,
-                            service_url,
-                            conv_id,
-                            thank_you_msg
-                        )
+                        # NO thank you message for message-level feedback
+                        # Message-level feedback should be silent and non-disruptive
                         
                     else:
                         logger.error("Failed to record message reply feedback in database")
-                        # Still send acknowledgment to user
-                        background_tasks.add_task(
-                            adapter.send_message,
-                            service_url,
-                            conv_id,
-                            "Thank you for your feedback! 🙏"
-                        )
+                        # NO acknowledgment for message-level feedback, even on database failure
                         
                 except Exception as e:
                     logger.error(f"Error recording message reply feedback: {e}")
-                    # Send generic acknowledgment even on error
-                    background_tasks.add_task(
-                        adapter.send_message,
-                        service_url,
-                        conv_id,
-                        "Thank you for your feedback! 🙏"
-                    )
+                    # NO acknowledgment for message-level feedback, even on error
 
             return TeamsActivityResponse(text="")
 
