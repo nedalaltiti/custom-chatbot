@@ -146,7 +146,7 @@ class TeamsAdapter:
             ],
             "channelData": {
                 "feedbackLoop": {
-                    "type": "default"  # Enable feedback buttons
+                    "type": "default"  # Enable Teams built-in feedback buttons
                 }
             }
         }
@@ -451,7 +451,7 @@ class _MicrosoftTeamsStreamer:
             ],
             "channelData": {
                 "feedbackLoop": {
-                    "type": "default"  # Enable feedback buttons
+                    "type": "default"  # Enable Teams built-in feedback buttons
                 }
             }
         }
