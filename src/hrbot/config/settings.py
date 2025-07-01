@@ -306,13 +306,13 @@ class GoogleCloudSettings:
 @dataclass(frozen=True)
 class FeedbackSettings:
     admin_token: str = "your-strong-secret-token"
-    feedback_timeout_minutes: int = 1
+    feedback_timeout_minutes: int = 10
 
     @classmethod
     def from_environment(cls) -> "FeedbackSettings":
         return cls(
             admin_token=get_env_var("ADMIN_TOKEN"),
-            feedback_timeout_minutes=1,  # Hardcoded to 1 minute
+            feedback_timeout_minutes=get_env_var_int("FEEDBACK_TIMEOUT_MINUTES", cls.feedback_timeout_minutes),
         )
 
 @dataclass(frozen=True)
