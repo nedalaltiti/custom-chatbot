@@ -392,7 +392,7 @@ Analyze the message:"""
     def get_feedback_delay_minutes(self, analysis: ConversationAnalysis) -> int:
         """Get the delay in minutes for scheduled feedback."""
         if analysis.feedback_timing == "delayed":
-            return 10  # 10 minutes of inactivity
+            return 1  # 1 minute of inactivity
         return 0
     
     def get_feedback_type(self, analysis: ConversationAnalysis) -> str:
