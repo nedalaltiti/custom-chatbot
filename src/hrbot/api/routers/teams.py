@@ -738,7 +738,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             # schedule delayed feedback only
             feedback_service.cancel_pending_feedback(user_id)
             if not feedback_service.has_received_feedback(user_id):
-                feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, delay_minutes=1)  # Hardcoded to 1 minute
+                feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, delay_minutes=10)
 
             return TeamsActivityResponse(text="")
         except Exception as e:
