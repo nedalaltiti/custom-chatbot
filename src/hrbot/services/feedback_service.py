@@ -27,7 +27,7 @@ class FeedbackService:
         self.activity_to_message_id = {}  # teams_activity_id: bot_message_db_id
         
         # Default settings
-        self.default_timeout_minutes = getattr(settings.feedback, 'feedback_timeout_minutes', 10)
+        self.default_timeout_minutes = 1  # Hardcoded to 1 minute
         self.activity_check_interval = 30  # Check user activity every 30 seconds
 
     def track_user_activity(self, user_id: str):
