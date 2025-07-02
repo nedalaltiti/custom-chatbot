@@ -37,7 +37,7 @@ pipelines:
                       }
                     }
                   }' \
-              https://api.bitbucket.org/2.0/repositories/usclaritytech/$PROD_DEPLOYMENT_REPO/pipelines/
+              https://api.bitbucket.org/2.0/repositories/wuduh/$PROD_DEPLOYMENT_REPO/pipelines/
     stg:
       - step:
           name: Build Docker Image (Dev)
@@ -71,7 +71,7 @@ pipelines:
                       }
                     }
                   }' \
-              https://api.bitbucket.org/2.0/repositories/usclaritytech/$STG_DEPLOYMENT_REPO/pipelines/
+              https://api.bitbucket.org/2.0/repositories/wuduh/$STG_DEPLOYMENT_REPO/pipelines/
     dev:
       - step:
           name: Build Docker Image (Dev)
