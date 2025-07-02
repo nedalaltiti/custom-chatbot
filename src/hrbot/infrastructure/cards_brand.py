@@ -1,14 +1,16 @@
+from hrbot.config.app_config import get_current_app_config
+
 BRAND = {
     "primary": "#003E6B",   # Navy
     "accent":  "#46B2FF",   # Sky
     "bg":      "#F6F9FC",   # Off-white
-    # Replace with real hosted logo URL
-    "logo_url": "https://media.licdn.com/dms/image/v2/D4E0BAQEGjhiqYFMfew/company-logo_200_200/company-logo_200_200/0/1722803877919/wuduh_logo?e=1753315200&v=beta&t=XPwYpKBCeW0kwIYG-wdKDbLoNYEx8eIcOZdCHCYfURc",
 }
 
 
 def brand_header(title: str, *, size: str = "Medium") -> dict:
     """Header with thin navy bar, logo and title. Works in dark/light themes."""
+    app_config = get_current_app_config()
+    logo_url = app_config.logo_url 
     return {
         "type": "Container",
         "bleed": True,
@@ -28,7 +30,7 @@ def brand_header(title: str, *, size: str = "Medium") -> dict:
                     "spacing": "Small",
                     "items": [{
                         "type": "Image",
-                        "url": BRAND["logo_url"],
+                        "url": logo_url,
                         "size": "Small",
                         "style": "Person"
                     }]
@@ -46,4 +48,4 @@ def brand_header(title: str, *, size: str = "Medium") -> dict:
                 }
             ]
         }]
-    } 
+    }

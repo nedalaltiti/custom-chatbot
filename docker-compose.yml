@@ -1,123 +1,67 @@
-# Docker Compose for HR Teams Bot
-# Supports both development and production environments
-# Usage: 
-#   Development: docker-compose up
-#   Production: docker-compose --profile production up
-
-version: '3.8'
-
 networks:
   hrbot-network:
     driver: bridge
     name: hrbot-network
 
 volumes:
-  # Persistent data storage
   hrbot-data:
     name: hrbot-data
-  hrbot-logs:
-    name: hrbot-logs
-  hrbot-knowledge:
-    name: hrbot-knowledge
-  
-  # Development volumes
   postgres-data:
     name: hrbot-postgres-data
-  redis-data:
-    name: hrbot-redis-data
-  nginx-logs:
-    name: hrbot-nginx-logs
-
+  hrbot-logs-jo:
+    name: hrbot-logs-jo
+  hrbot-logs-us:
+    name: hrbot-logs-us
 
 services:
   
-  hrbot:
+  # Jordan (jo) Instance
+  hrbot-jo:
     build:
       context: .
       dockerfile: Dockerfile
       target: runtime
       args:
-        POETRY_VERSION: 1.6.1
-        APP_USER: hrbot
-        APP_UID: 1000
-        APP_GID: 1000
+        APP_INSTANCE: jo
     
-    image: hrbot:latest
-    container_name: hrbot-app
-    
-    # Restart policy for production reliability
+    image: hrbot:jo-latest
+    container_name: hrbot-jo
     restart: unless-stopped
     
-    # Port mapping
     ports:
-      - "3978:3978"  # Teams Bot port
+      - "3978:3978"
     
-    # Environment variables
+    # env_file:
+    #   - .env.jo
+    
     environment:
-      # Core app settings
-      - APP_NAME=${APP_NAME:-HR Teams Bot}
-      - DEBUG=${DEBUG:-false}
+      - APP_INSTANCE=jo
+      - HOSTNAME=hrbot-jo
+      - PYTHONPATH=/app/src
       - HOST=0.0.0.0
       - PORT=3978
-      
-      # AWS configuration for secrets
-      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
-      - AWS_REGION=${AWS_REGION:-us-west-1}
-      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
-      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      # AWS credentials and configuration
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      
-      # Database pool settings
-      - DB_POOL_SIZE=${DB_POOL_SIZE:-5}
-      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW:-10}
-      - DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT:-30}
-      - DB_POOL_RECYCLE=${DB_POOL_RECYCLE:-1800}
-      
-      # Teams Bot configuration
-      - MICROSOFT_APP_ID=${MICROSOFT_APP_ID}
-      - MICROSOFT_APP_PASSWORD=${MICROSOFT_APP_PASSWORD}
-      - TENANT_ID=${TENANT_ID}
-      - CLIENT_ID=${CLIENT_ID}
-      - CLIENT_SECRET=${CLIENT_SECRET}
-      
-      # Performance settings
-      - USE_INTENT_CLASSIFICATION=${USE_INTENT_CLASSIFICATION:-false}
-      - CACHE_EMBEDDINGS=${CACHE_EMBEDDINGS:-true}
-      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-3600}
-      - MIN_STREAMING_LENGTH=${MIN_STREAMING_LENGTH:-50}
-      - ENABLE_STREAMING=${ENABLE_STREAMING:-true}
-      - STREAMING_DELAY=${STREAMING_DELAY:-1.2}
-      
-      # Session and feedback settings
-      - SESSION_IDLE_MINUTES=${SESSION_IDLE_MINUTES:-30}
-      - FEEDBACK_TIMEOUT_MINUTES=${FEEDBACK_TIMEOUT_MINUTES:-10}
-      
-      # HR Support portal
-      - HR_SUPPORT_URL=${HR_SUPPORT_URL:-https://hrsupport.usclarity.com/support/home}
-      - HR_SUPPORT_DOMAIN=${HR_SUPPORT_DOMAIN:-hrsupport.usclarity.com}
-      
-      # CORS settings
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
-      
-      # Container-specific settings
-      - PYTHONPATH=/app/src
+      - AWS_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      # Let .env.jo file handle AWS secret names
+      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      # Local development overrides
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
     
-    # Volume mounts for persistent data
     volumes:
       - hrbot-data:/app/data
-      - hrbot-logs:/app/logs
-      - hrbot-knowledge:/app/data/knowledge
+      - hrbot-logs-jo:/app/logs
     
-    # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3978/health/"]
+      test: ["CMD", "python", "/app/healthcheck.py"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
     
-    # Resource limits for production
     deploy:
       resources:
         limits:
@@ -127,63 +71,103 @@ services:
           memory: 512M
           cpus: '0.25'
     
-    # Logging configuration
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-        labels: "service=hrbot,environment=production"
+        labels: "service=hrbot-jo,environment=${DEBUG:-production}"
     
-    # Network
     networks:
       - hrbot-network
     
-    # Security options
     security_opt:
       - no-new-privileges:true
     
-    # User configuration (non-root)
-    user: "1000:1000"
+    profiles:
+      - jo
+      - multi-app
+      - development
+      - default
 
-  postgres:
-    image: postgres:16-alpine
-    container_name: hrbot-postgres
-    profiles: ["development", "local"]  # Only runs in development
+  # US Instance
+  hrbot-us:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        APP_INSTANCE: us
     
+    image: hrbot:us-latest
+    container_name: hrbot-us
     restart: unless-stopped
     
-    environment:
-      POSTGRES_DB: ${DB_NAME:-az_airbyte}
-      POSTGRES_USER: ${DB_USER:-chatbot_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-your_local_password}
-      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-    
     ports:
-      - "5432:5432"
+      - "3979:3979"
+    
+    # env_file:
+    #   - .env.us
+    
+    environment:
+      - APP_INSTANCE=us
+      - HOSTNAME=hrbot-us
+      - PYTHONPATH=/app/src
+      - HOST=0.0.0.0
+      - PORT=3979
+      # AWS credentials and configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_DEFAULT_REGION:-us-west-1}
+      # Let .env.us file handle AWS secret names
+      - AWS_DB_SECRET_NAME=${AWS_DB_SECRET_NAME:-chatbot-clarity-db-dev-postgres}
+      - AWS_GEMINI_SECRET_NAME=${AWS_GEMINI_SECRET_NAME:-genai-gemini-vertex-prod-api}
+      # Local development overrides
+      - USE_AWS_SECRETS=${USE_AWS_SECRETS:-true}
+      - SKIP_DB_INIT=${SKIP_DB_INIT:-false}
     
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - hrbot-data:/app/data
+      - hrbot-logs-us:/app/logs
     
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-chatbot_user} -d ${DB_NAME:-az_airbyte}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=hrbot-us,environment=${DEBUG:-production}"
     
     networks:
       - hrbot-network
     
-    # Security
     security_opt:
       - no-new-privileges:true
+    
+    profiles:
+      - us
+      - multi-app
+      - development
 
+  # Nginx Reverse Proxy (optional)
   nginx:
     image: nginx:alpine
     container_name: hrbot-nginx
-    profiles: ["production"]  # Only in production
-    
     restart: unless-stopped
     
     ports:
@@ -192,14 +176,14 @@ services:
     
     volumes:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/nginx/ssl:/etc/ssl/certs:ro
-      - nginx-logs:/var/log/nginx
     
     depends_on:
-      - hrbot
+      - hrbot-jo
+      - hrbot-us
     
     networks:
       - hrbot-network
     
-    security_opt:
-      - no-new-privileges:true 
+    profiles:
+      - multi-app
+      - production

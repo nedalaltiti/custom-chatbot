@@ -3,6 +3,7 @@ name = "hrbot"
 version = "0.1.0"
 description = "HR Teams Bot with Gemini and RAG"
 authors = ["Nedal Altiti <nedal.altiti@live.com>"]
+packages = [{include = "hrbot", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -25,6 +26,12 @@ asyncpg = "^0.30.0"
 greenlet = "^3.2.2"
 boto3 = "^1.34.0"
 SQLAlchemy = "^2.0.41"
+aiofiles = "^24.1.0"
+pyyaml = "^6.0.2"
+
+[tool.poetry.group.dev.dependencies]
+aiohttp = "^3.12.7"
+psutil = "^7.0.0"
 
 [build-system]
 requires = ["poetry-core"]

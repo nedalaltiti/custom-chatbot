@@ -52,3 +52,13 @@ class MessageReply:
     id              = Column(BigInteger, primary_key=True, autoincrement=True)
     message_id      = Column(BigInteger, ForeignKey("ai_chatbot.message.id", ondelete="CASCADE"), nullable=False)
     reply_message_id= Column(BigInteger, ForeignKey("ai_chatbot.message.id", ondelete="CASCADE"), nullable=False)
+
+@mapper.mapped
+class MessageReplyFeedback:
+    __tablename__ = "message_reply_feedback"
+
+    id              = Column(BigInteger, primary_key=True, autoincrement=True)
+    message_id = Column(BigInteger, ForeignKey("ai_chatbot.message_reply.id", ondelete="CASCADE"), nullable=False)
+    feedback        = Column(String(8), nullable=False) # like | dislike
+    feedback_comment = Column(Text)
+    timestamp        = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)

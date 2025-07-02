@@ -1,0 +1,142 @@
+# Multi-Tenant Configuration for HR Bot
+# This file defines tenant-specific settings and can be used for dynamic configuration
+
+# Default tenant (used when no specific tenant is detected)
+default_tenant: jordan
+
+# Tenant detection configuration
+detection:
+  method: auto  # auto, env, header, subdomain, config
+  header_name: X-Tenant-Region
+  fallback_to_default: true
+
+# Tenant configurations
+tenants:
+  jordan:
+    name: "Jordan HR Team"
+    region: jordan
+    description: "HR assistance for Jordan-based employees"
+    
+    # Feature flags
+    features:
+      noi_enabled: true
+      advanced_analytics: true
+      multi_language: false
+    
+    # URLs and endpoints
+    hr_support_url: "https://hrsupport.usclarity.com/support/home"
+    escalation_url: "https://hrsupport.usclarity.com/support/escalate"
+    
+    # Data directories (relative to app root)
+    data:
+      knowledge_base: "data/knowledge/jordan"
+      embeddings: "data/embeddings/jordan"
+      custom_prompts: "data/prompts/jordan"
+    
+    # Database settings (optional - can use shared DB with tenant prefix)
+    database:
+      schema_prefix: "jordan_"
+      separate_db: false
+    
+    # Teams integration
+    teams:
+      app_id: "${MICROSOFT_APP_ID_JORDAN:-${MICROSOFT_APP_ID}}"
+      tenant_id: "${TEAMS_TENANT_ID_JORDAN:-${TENANT_ID}}"
+    
+    # Performance settings
+    performance:
+      cache_ttl: 3600
+      max_concurrent_requests: 10
+      streaming_enabled: true
+    
+    # Custom branding
+    branding:
+      bot_name: "HR Assistant - Jordan"
+      welcome_message: "مرحباً! I'm here to help with your HR questions."
+      primary_color: "#003C71"
+
+  us:
+    name: "US HR Team"
+    region: us
+    description: "HR assistance for US-based employees"
+    
+    # Feature flags
+    features:
+      noi_enabled: false  # NOI not available for US team
+      advanced_analytics: true
+      multi_language: true
+    
+    # URLs and endpoints
+    hr_support_url: "https://hrsupport.usclarity.com/support/us"
+    escalation_url: "https://hrsupport.usclarity.com/support/us/escalate"
+    
+    # Data directories
+    data:
+      knowledge_base: "data/knowledge/us"
+      embeddings: "data/embeddings/us"
+      custom_prompts: "data/prompts/us"
+    
+    # Database settings
+    database:
+      schema_prefix: "us_"
+      separate_db: false
+    
+    # Teams integration
+    teams:
+      app_id: "${MICROSOFT_APP_ID_US:-${MICROSOFT_APP_ID}}"
+      tenant_id: "${TEAMS_TENANT_ID_US:-${TENANT_ID}}"
+    
+    # Performance settings
+    performance:
+      cache_ttl: 3600
+      max_concurrent_requests: 15
+      streaming_enabled: true
+    
+    # Custom branding
+    branding:
+      bot_name: "HR Assistant - US"
+      welcome_message: "Hello! I'm here to help with your HR questions."
+      primary_color: "#0078D4"
+
+# Global settings that apply to all tenants
+global:
+  # Rate limiting
+  rate_limiting:
+    requests_per_minute: 60
+    burst_size: 20
+  
+  # Security
+  security:
+    max_upload_size: "100MB"
+    allowed_file_types: [".pdf", ".docx", ".txt", ".md"]
+    require_authentication: false
+  
+  # Monitoring
+  monitoring:
+    health_check_interval: 30
+    log_level: "INFO"
+    metrics_enabled: true
+  
+  # AI/LLM settings
+  ai:
+    model_temperature: 0.0
+    max_tokens: 1024
+    fallback_to_generic: true
+    safety_filters: true
+
+# Environment-specific overrides
+environments:
+  development:
+    global:
+      monitoring:
+        log_level: "DEBUG"
+      ai:
+        model_temperature: 0.1  # Slightly more creative for testing
+  
+  production:
+    global:
+      security:
+        require_authentication: true
+      ai:
+        safety_filters: true
+        fallback_to_generic: false 

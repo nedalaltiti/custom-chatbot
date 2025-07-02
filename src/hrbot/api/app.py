@@ -11,12 +11,13 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 import asyncio
+import os
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from hrbot.api.routers import admin, feedback, health, teams
+from hrbot.api.routers import admin, feedback, health, teams, debug
 from hrbot.config.settings import settings
 from hrbot.utils.di import get_vector_store         
 from hrbot.infrastructure.ingest import refresh_vector_index 
@@ -49,7 +50,11 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         await init_database()
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
-        raise
+        # Check if we should fail on DB errors
+        if os.environ.get("SKIP_DB_INIT", "").lower() not in ("true", "1", "yes"):
+            raise
+        else:
+            logger.warning("Continuing without database (SKIP_DB_INIT=true)")
 
     # Store temporary credentials path for cleanup
     if settings.gemini.use_aws_secrets and settings.gemini.credentials_path:
@@ -67,6 +72,45 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
     # Initialize LLM service in background to reduce first-request latency
     asyncio.create_task(_warmup_services())
+
+    # Log current app instance
+    try:
+        from hrbot.config.app_config import get_current_app_config, detect_app_instance_from_hostname, detect_app_instance_from_env
+        
+        # Show detection methods
+        hostname_instance = detect_app_instance_from_hostname()
+        env_instance = detect_app_instance_from_env()
+        
+        logger.info("App Instance Detection:")
+        logger.info(f"   • Hostname detection: {hostname_instance if hostname_instance else 'None'}")
+        logger.info(f"   • Environment variable: {env_instance if env_instance else 'None'}")
+        
+        # Show current hostname for debugging
+        hostname = (
+            os.environ.get("HOSTNAME") or
+            os.environ.get("HOST") or
+            os.environ.get("SERVER_NAME") or
+            os.environ.get("INGRESS_HOST")
+        )
+        if hostname:
+            logger.info(f"   • Current hostname: {hostname}")
+        
+        # Get final configuration
+        app_config = get_current_app_config()
+        logger.info(f"Using app instance: {app_config.instance_id} ({app_config.name})")
+        logger.info(f"Knowledge base: {app_config.knowledge_base_dir}")
+        logger.info(f"Embeddings: {app_config.embeddings_dir}")
+        logger.info(f"Prompts: {app_config.prompt_dir}")
+        logger.info(f"Features: NOI={app_config.supports_noi}")
+        
+        # Show Teams app configuration
+        teams_settings = settings.teams
+        if teams_settings.app_id:
+            logger.info(f"🤖 Teams App ID: {teams_settings.app_id[:8]}...{teams_settings.app_id[-8:] if len(teams_settings.app_id) > 16 else teams_settings.app_id}")
+        
+    except Exception as e:
+        logger.error(f"Error during app instance detection: {e}")
+        logger.info("Continuing with default configuration")
 
     logger.info("✅  Startup complete")
     try:
@@ -118,6 +162,7 @@ app = FastAPI(
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 if settings.cors_origins:   # don't enable CORS unless explicitly configured
@@ -132,7 +177,8 @@ if settings.cors_origins:   # don't enable CORS unless explicitly configured
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
-app.include_router(admin.router,  prefix="/admin", tags=["admin"])
+app.include_router(admin.router,  prefix="/api/admin", tags=["admin"])
+app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 
 @app.exception_handler(BaseError)
 async def hrbot_error_handler(_: Request, exc: BaseError) -> JSONResponse:

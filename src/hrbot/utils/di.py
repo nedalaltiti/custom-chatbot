@@ -2,6 +2,7 @@ from functools import lru_cache
 
 from hrbot.services.gemini_service import GeminiService
 from hrbot.services.intent_service import IntentDetectionService
+from hrbot.services.content_classification_service import ContentClassificationService
 from hrbot.infrastructure.vector_store import VectorStore
 from hrbot.core.rag.engine import RAG 
 from hrbot.core.adapters.llm_gemini import LLMServiceAdapter
@@ -35,6 +36,22 @@ def get_intent_service() -> IntentDetectionService:
     into the prompt system for determining empathetic vs neutral responses.
     """
     return IntentDetectionService(llm_service=get_llm())
+
+
+@lru_cache
+def get_content_classification_service() -> ContentClassificationService:
+    """
+    Return a shared ContentClassificationService for intelligent conversation flow analysis.
+    
+    This service determines:
+    - When conversations should end and feedback should be collected
+    - Appropriate response strategies for different content types
+    - Safety interventions and policy violations
+    - Smart redirection for off-topic queries
+    
+    Uses LLM analysis instead of hardcoded keywords for better accuracy.
+    """
+    return ContentClassificationService(llm_service=get_llm())
 
 
 @lru_cache
