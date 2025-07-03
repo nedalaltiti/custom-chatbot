@@ -75,3 +75,24 @@ class Contact:
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     firstname = Column(String(255), nullable=False)
     lastname = Column(String(255), nullable=True)
+    acctid = Column(String(255), nullable=True)
+    del_ = Column(String(1), nullable=True)  # Using del_ to avoid Python keyword conflict
+    iscoapp = Column(String(1), nullable=True)
+    c_type = Column(String(50), nullable=True)
+    leadstatus = Column(String(50), nullable=True)
+
+@public_mapper.mapped
+class ContactUserField:
+    __tablename__ = "contacts_userfields"
+    __table_args__ = {"schema": "public"}
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    contact_id = Column(BigInteger, ForeignKey("public.contacts.id"), nullable=False)
+    custom_id = Column(BigInteger, nullable=False)
+    f_string = Column(Text, nullable=True)
+    f_text = Column(Text, nullable=True)
+    f_int = Column(BigInteger, nullable=True)
+    f_float = Column(BigInteger, nullable=True)  # Using BigInteger for compatibility
+    f_date = Column(TIMESTAMP, nullable=True)
+    f_datetime = Column(TIMESTAMP, nullable=True)
+    f_bool = Column(String(1), nullable=True)

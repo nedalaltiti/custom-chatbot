@@ -765,6 +765,8 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         
         return TeamsActivityResponse(text="")
     
+
+    
     # Handle redirected scenarios (off-topic questions)
     if analysis.flow_type.value == "continue_redirected":
         # Send redirect message but continue conversation
