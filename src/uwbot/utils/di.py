@@ -1,9 +1,11 @@
 from functools import lru_cache
+from typing import Optional
 
 from uwbot.services.gemini_service import GeminiService
 from uwbot.services.intent_service import IntentDetectionService
 from uwbot.services.content_classification_service import ContentClassificationService
 from uwbot.services.contact_service import ContactService
+from uwbot.services.hardship_validation_service import HardshipValidationService
 
 """
 Dependency-provider helpers for FastAPI.
@@ -64,3 +66,8 @@ def get_contact_service() -> ContactService:
     - Extracting contact IDs from user messages
     """
     return ContactService()
+
+
+@lru_cache
+def get_hardship_validation_service() -> HardshipValidationService:
+    return HardshipValidationService(get_llm())

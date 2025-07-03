@@ -8,10 +8,11 @@ Allows users to query contact information by ID.
 import logging
 from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
-from uwbot.db.models import Contact
+from uwbot.db.models import Contact, ContactUserField
 from uwbot.db.session import get_db_session_context
+from uwbot.services.hardship_validation_service import HardshipValidationService, HardshipAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -19,133 +20,177 @@ class ContactService:
     """Service for managing contact information from the public.contacts table."""
     
     def __init__(self):
-        pass
+        self.hardship_service = HardshipValidationService()
     
     async def get_contact_by_id(self, contact_id: int) -> Optional[Dict[str, Any]]:
         """
-        Retrieve contact information by ID from the public.contacts table.
+        Retrieve hardship data and analyze its validity using the Gemini model.
+        This replaces the previous contact lookup functionality.
+        
+        Args:
+            contact_id: The ID of the contact to analyze
+            
+        Returns:
+            Dictionary containing hardship analysis results or None if contact not found
+        """
+        try:
+            # Get hardship data
+            hardship_data = await self.get_contact_with_hardship_data(contact_id)
+            
+            if not hardship_data:
+                logger.warning(f"No hardship data found for contact {contact_id}")
+                return None
+            
+            # Check if there's any hardship data to analyze
+            has_hardship_data = any([
+                hardship_data.get('financial_hardship'),
+                hardship_data.get('hardship_description'),
+                hardship_data.get('financial_hardship_details')
+            ])
+            
+            if not has_hardship_data:
+                logger.info(f"No hardship data available for contact {contact_id}")
+                return {
+                    "contact_id": contact_id,
+                    "analysis": {
+                        "result": "no_pass",
+                        "confidence": 0.0,
+                        "reason": "No hardship data available for analysis"
+                    },
+                    "formatted_response": f"No hardship data found for contact {contact_id}. Please ensure hardship information has been provided."
+                }
+            
+            # Analyze hardship validity
+            analysis_result = await self.hardship_service.analyze_hardship_validity(hardship_data)
+            
+            if analysis_result.is_error():
+                logger.error(f"Hardship analysis failed for contact {contact_id}: {analysis_result.error}")
+                return {
+                    "contact_id": contact_id,
+                    "error": str(analysis_result.error),
+                    "analysis": None,
+                    "formatted_response": f"Unable to analyze hardship data for contact {contact_id}. Please try again or contact support."
+                }
+            
+            analysis = analysis_result.value
+            formatted_response = self.hardship_service.format_hardship_response(analysis, hardship_data)
+            
+            return {
+                "contact_id": contact_id,
+                "hardship_data": hardship_data,
+                "analysis": {
+                    "result": analysis.result.value,
+                    "confidence": analysis.confidence,
+                    "reason": analysis.reason
+                },
+                "formatted_response": formatted_response
+            }
+            
+        except Exception as e:
+            logger.error(f"Error analyzing hardship for contact {contact_id}: {e}")
+            return {
+                "contact_id": contact_id,
+                "error": str(e),
+                "analysis": None,
+                "formatted_response": f"Error analyzing hardship data for contact {contact_id}. Please try again."
+            }
+    
+    async def get_contact_with_hardship_data(self, contact_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve contact information with hardship data using the exact query structure provided.
         
         Args:
             contact_id: The ID of the contact to retrieve
             
         Returns:
-            Dictionary containing contact information or None if not found
+            Dictionary containing contact and hardship information or None if not found
         """
         try:
             async with get_db_session_context() as session:
-                # Query the public.contacts table
-                stmt = select(Contact).where(Contact.id == contact_id)
-                result = await session.execute(stmt)
-                contact = result.scalar_one_or_none()
+                # Use the exact query structure you provided
+                query = text("""
+                    SELECT contacts.id,
+                           contacts.acctid,
+                           contacts.del as del_flag,
+                           contacts.iscoapp,
+                           contacts.c_type,
+                           contacts.leadstatus,
+                           financial_hardship.f_string as financial_hardship,
+                           hardship_description.f_string as hardship_description,
+                           financial_hardship_details.f_string as financial_hardship_details
+                    FROM contacts
+                    LEFT JOIN contacts_userfields financial_hardship ON contacts.id = financial_hardship.contact_id AND financial_hardship.custom_id = 322256
+                    LEFT JOIN contacts_userfields hardship_description ON contacts.id = hardship_description.contact_id AND hardship_description.custom_id = 322271
+                    LEFT JOIN contacts_userfields financial_hardship_details ON contacts.id = financial_hardship_details.contact_id AND financial_hardship_details.custom_id = 322256
+                    WHERE contacts.id = :contact_id
+                """)
                 
-                if contact:
+                result = await session.execute(query, {"contact_id": contact_id})
+                row = result.fetchone()
+                
+                if row:
                     return {
-                        "id": contact.id,
-                        "first_name": contact.firstname,
-                        "last_name": contact.lastname,
+                        "contact_id": row.id,
+                        "acctid": row.acctid,
+                        "del": row.del_flag,
+                        "iscoapp": row.iscoapp,
+                        "c_type": row.c_type,
+                        "leadstatus": row.leadstatus,
+                        "financial_hardship": row.financial_hardship,
+                        "hardship_description": row.hardship_description,
+                        "financial_hardship_details": row.financial_hardship_details,
                     }
                 else:
                     logger.info(f"Contact with ID {contact_id} not found")
                     return None
                     
         except SQLAlchemyError as e:
-            logger.error(f"Database error while retrieving contact {contact_id}: {e}")
+            logger.error(f"Database error while retrieving contact hardship data {contact_id}: {e}")
             return None
         except Exception as e:
-            logger.error(f"Unexpected error while retrieving contact {contact_id}: {e}")
+            logger.error(f"Unexpected error while retrieving contact hardship data {contact_id}: {e}")
             return None
-    
-    async def search_contacts_by_name(self, name: str, limit: int = 10) -> list[Dict[str, Any]]:
-        """
-        Search contacts by first name or last name (case-insensitive).
-        
-        Args:
-            name: Name to search for
-            limit: Maximum number of results to return
-            
-        Returns:
-            List of matching contacts
-        """
-        try:
-            async with get_db_session_context() as session:
-                # Search in both firstname and lastname fields
-                search_term = f"%{name}%"
-                stmt = select(Contact).where(
-                    (Contact.firstname.ilike(search_term)) | 
-                    (Contact.lastname.ilike(search_term))
-                ).limit(limit)
-                
-                result = await session.execute(stmt)
-                contacts = result.scalars().all()
-                
-                return [
-                    {
-                        "id": contact.id,
-                        "firstname": contact.firstname,
-                        "lastname": contact.lastname,
-                    }
-                    for contact in contacts
-                ]
-                
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while searching contacts for '{name}': {e}")
-            return []
-        except Exception as e:
-            logger.error(f"Unexpected error while searching contacts for '{name}': {e}")
-            return []
-    
-    async def get_contact_count(self) -> int:
-        """
-        Get the total number of contacts in the database.
-        
-        Returns:
-            Total number of contacts
-        """
-        try:
-            async with get_db_session_context() as session:
-                stmt = select(Contact)
-                result = await session.execute(stmt)
-                return len(result.scalars().all())
-                
-        except SQLAlchemyError as e:
-            logger.error(f"Database error while counting contacts: {e}")
-            return 0
-        except Exception as e:
-            logger.error(f"Unexpected error while counting contacts: {e}")
-            return 0
     
     def format_contact_response(self, contact: Dict[str, Any]) -> str:
         """
-        Format contact information into a user-friendly response.
+        Format hardship analysis results into a user-friendly response.
         
         Args:
-            contact: Contact dictionary from get_contact_by_id
+            contact: Hardship analysis dictionary from get_contact_by_id
             
         Returns:
             Formatted string response
         """
         if not contact:
-            return "I couldn't find a contact with that ID. Please check the ID and try again."
+            return "I couldn't find hardship data for that contact ID. Please check the ID and try again."
         
-        response_parts = [f"**Contact Information:**"]
+        # If there's a formatted response already provided, use it
+        if contact.get('formatted_response'):
+            return contact['formatted_response']
         
-        # Format full name
-        first_name = contact.get('first_name', '')
-        last_name = contact.get('last_name', '')
-        if first_name and last_name:
-            response_parts.append(f"• **Name:** {first_name} {last_name}")
-        elif first_name:
-            response_parts.append(f"• **Name:** {first_name}")
-        elif last_name:
-            response_parts.append(f"• **Name:** {last_name}")
+        # If there's an error, return the error message
+        if contact.get('error'):
+            return f"Error analyzing hardship data: {contact['error']}"
         
-        if contact.get('email'):
-            response_parts.append(f"• **Email:** {contact['email']}")
+        # If there's analysis data, format it
+        analysis = contact.get('analysis')
+        if analysis:
+            result = analysis.get('result', 'unknown')
+            confidence = analysis.get('confidence', 0.0)
+            reason = analysis.get('reason', 'No reason provided')
+            
+            response_parts = [
+                f"**Financial Hardship Analysis for Contact {contact.get('contact_id', 'Unknown')}**",
+                "",
+                f"**Result:** {result.upper()}",
+                f"**Confidence:** {confidence:.1%}",
+                "",
+                f"**Reason:** {reason}"
+            ]
+            
+            return "\n".join(response_parts)
         
-        if contact.get('phone'):
-            response_parts.append(f"• **Phone:** {contact['phone']}")
-        
-        return "\n".join(response_parts)
+        return "Unable to format hardship analysis results. Please try again."
     
     def extract_contact_id_from_message(self, message: str) -> Optional[int]:
         """

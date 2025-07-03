@@ -6,7 +6,7 @@ import logging
 from uwbot.services.processor import ChatProcessor
 from uwbot.services.message_service import MessageService
 from uwbot.services.session_tracker import session_tracker
-from uwbot.utils.di import get_content_classification_service, get_contact_service
+from uwbot.utils.di import get_content_classification_service, get_contact_service, get_hardship_validation_service
 from uwbot.config.settings import settings
 from uwbot.core.adapters.llm_gemini import LLMServiceAdapter
 from uwbot.services.gemini_service import GeminiService
@@ -41,6 +41,8 @@ class ContactQueryResponse(BaseModel):
     success: bool
     processing_time: float
 
+
+
 # In-memory conversation storage for debug sessions
 debug_memories = {}
 
@@ -52,28 +54,28 @@ debug_memories = {}
 
 @router.post("/contact", response_model=ContactQueryResponse)
 async def debug_contact_query(req: ContactQueryRequest):
-    """Debug endpoint for testing contact queries."""
+    """Debug endpoint for testing hardship validation analysis."""
     start_time = time.time()
     
     try:
         contact_service = get_contact_service()
         
-        # Query the contact database
-        contact = await contact_service.get_contact_by_id(req.contact_id)
-        contact_response = contact_service.format_contact_response(contact)
+        # Query hardship data and analyze validity
+        hardship_result = await contact_service.get_contact_by_id(req.contact_id)
+        hardship_response = contact_service.format_contact_response(hardship_result)
         
         processing_time = time.time() - start_time
         
         return ContactQueryResponse(
             contact_id=req.contact_id,
-            contact_info=contact,
-            response=contact_response,
-            success=contact is not None,
+            contact_info=hardship_result,
+            response=hardship_response,
+            success=hardship_result is not None,
             processing_time=round(processing_time, 2)
         )
         
     except Exception as e:
-        logger.error(f"Contact query error: {e}")
+        logger.error(f"Hardship analysis error: {e}")
         processing_time = time.time() - start_time
         return ContactQueryResponse(
             contact_id=req.contact_id,
@@ -82,6 +84,8 @@ async def debug_contact_query(req: ContactQueryRequest):
             success=False,
             processing_time=round(processing_time, 2)
         )
+
+
 
 @router.post("/chat", response_model=DebugChatResponse)
 async def debug_chat(req: DebugChatRequest):
