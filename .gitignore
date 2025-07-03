@@ -192,3 +192,4 @@ __pycache__/
 # never commit env files
 .env*
 
+.DS_Store
