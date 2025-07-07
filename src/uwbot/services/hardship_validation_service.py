@@ -35,7 +35,6 @@ class HardshipValidationService:
     # Custom field IDs for hardship-related data
     FINANCIAL_HARDSHIP_ID = 322256
     HARDSHIP_DESCRIPTION_ID = 322271
-    FINANCIAL_HARDSHIP_DETAILS_ID = 322256  # Same as financial_hardship_id based on your query
     
     def __init__(self, llm_service: Optional[GeminiService] = None):
         """Initialize the hardship validation service."""
@@ -83,7 +82,6 @@ class HardshipValidationService:
         contact_id = hardship_data.get('contact_id', 'Unknown')
         financial_hardship = hardship_data.get('financial_hardship', '')
         hardship_description = hardship_data.get('hardship_description', '')
-        hardship_details = hardship_data.get('financial_hardship_details', '')
         
         prompt = f"""
 You are a financial hardship validation expert. Analyze the following hardship claim and determine if it passes validation.
@@ -93,12 +91,11 @@ CONTACT ID: {contact_id}
 HARDSHIP DATA:
 - Financial Hardship Status: {financial_hardship}
 - Hardship Description: {hardship_description}
-- Financial Hardship Details: {hardship_details}
 
 VALIDATION CRITERIA:
-1. **Documentation Completeness**: The hardship claim should have sufficient supporting documentation
-2. **Financial Impact**: There should be evidence of significant financial impact
-3. **Temporary Nature**: Hardships should typically be temporary, not permanent
+1. **Financial Hardship Relevance**: The description should make sense in terms of a financial hardship
+2. **Acceptable Formats**: Single words (e.g., "bankruptcy", "covid 19") or short descriptions are acceptable
+3. **Common Hardship Types**: Job loss, medical expenses, natural disasters, economic downturns, etc.
 4. **Reasonableness**: The hardship should be reasonable and verifiable
 5. **Compliance**: The hardship should comply with relevant regulations and policies
 
@@ -112,15 +109,15 @@ Please analyze the hardship claim and provide a structured response in the follo
 }}
 
 RESULT GUIDELINES:
-- **pass**: Clear evidence of legitimate hardship with proper documentation and reasonable circumstances
-- **no_pass**: Insufficient documentation, fraudulent claim, non-compliant, or clearly unreasonable hardship
+- **pass**: The hardship description makes sense as a financial hardship (single words like "bankruptcy", "covid 19" are acceptable)
+- **no_pass**: The description does not relate to financial hardship or is clearly inappropriate (e.g., "vacation", "luxury purchase")
 
 CONFIDENCE SCALE:
-- 0.9-1.0: Very high confidence in the decision
-- 0.7-0.89: High confidence with minor uncertainties
-- 0.5-0.69: Moderate confidence, some uncertainty
-- 0.3-0.49: Low confidence, significant uncertainty
-- 0.0-0.29: Very low confidence, highly uncertain
+- 0.9-1.0: Very high confidence - clear financial hardship (e.g., "bankruptcy", "job loss")
+- 0.7-0.89: High confidence - reasonable hardship with minor uncertainties
+- 0.5-0.69: Moderate confidence - some uncertainty about hardship relevance
+- 0.3-0.49: Low confidence - unclear if it's a financial hardship
+- 0.0-0.29: Very low confidence - likely not a financial hardship
 
 Please provide your analysis in the exact JSON format specified above.
 """
@@ -200,14 +197,14 @@ Please provide your analysis in the exact JSON format specified above.
         
         contact_id = hardship_data.get('contact_id', 'Unknown')
         
+        # Format confidence as percentage with one decimal place
+        confidence_percent = f"{analysis.confidence * 100:.1f}%"
+        
         response_parts = [
-            f"**Financial Hardship Analysis for Contact {contact_id}**",
-            "",
-            f"**Result:** {analysis.result.value.upper()}",
-            f"**Confidence:** {analysis.confidence:.1%}",
-            "",
-            f"**Reason:** {analysis.reason}",
-            ""
+            f"Financial Hardship Analysis for Contact {contact_id}",
+            f"Result: {analysis.result.value.upper()}",
+            f"Confidence: {confidence_percent}",
+            f"Reason: {analysis.reason}"
         ]
         
         return "\n".join(response_parts) 
