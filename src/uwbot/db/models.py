@@ -73,8 +73,6 @@ class Contact:
     __table_args__ = {"schema": "public"}
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
-    firstname = Column(String(255), nullable=False)
-    lastname = Column(String(255), nullable=True)
     acctid = Column(String(255), nullable=True)
     del_ = Column(String(1), nullable=True)  # Using del_ to avoid Python keyword conflict
     iscoapp = Column(String(1), nullable=True)

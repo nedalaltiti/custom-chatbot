@@ -44,8 +44,7 @@ class ContactService:
             # Check if there's any hardship data to analyze
             has_hardship_data = any([
                 hardship_data.get('financial_hardship'),
-                hardship_data.get('hardship_description'),
-                hardship_data.get('financial_hardship_details')
+                hardship_data.get('hardship_description')
             ])
             
             if not has_hardship_data:
@@ -116,12 +115,10 @@ class ContactService:
                            contacts.c_type,
                            contacts.leadstatus,
                            financial_hardship.f_string as financial_hardship,
-                           hardship_description.f_string as hardship_description,
-                           financial_hardship_details.f_string as financial_hardship_details
+                           hardship_description.f_string as hardship_description
                     FROM contacts
                     LEFT JOIN contacts_userfields financial_hardship ON contacts.id = financial_hardship.contact_id AND financial_hardship.custom_id = 322256
                     LEFT JOIN contacts_userfields hardship_description ON contacts.id = hardship_description.contact_id AND hardship_description.custom_id = 322271
-                    LEFT JOIN contacts_userfields financial_hardship_details ON contacts.id = financial_hardship_details.contact_id AND financial_hardship_details.custom_id = 322256
                     WHERE contacts.id = :contact_id
                 """)
                 
@@ -138,7 +135,6 @@ class ContactService:
                         "leadstatus": row.leadstatus,
                         "financial_hardship": row.financial_hardship,
                         "hardship_description": row.hardship_description,
-                        "financial_hardship_details": row.financial_hardship_details,
                     }
                 else:
                     logger.info(f"Contact with ID {contact_id} not found")
@@ -162,7 +158,7 @@ class ContactService:
             Formatted string response
         """
         if not contact:
-            return "I couldn't find hardship data for that contact ID. Please check the ID and try again."
+            return "No hardship data found for that contact ID. Please ensure hardship information has been provided."
         
         # If there's a formatted response already provided, use it
         if contact.get('formatted_response'):
@@ -179,13 +175,14 @@ class ContactService:
             confidence = analysis.get('confidence', 0.0)
             reason = analysis.get('reason', 'No reason provided')
             
+            # Format confidence as percentage with one decimal place
+            confidence_percent = f"{confidence * 100:.1f}%"
+            
             response_parts = [
-                f"**Financial Hardship Analysis for Contact {contact.get('contact_id', 'Unknown')}**",
-                "",
-                f"**Result:** {result.upper()}",
-                f"**Confidence:** {confidence:.1%}",
-                "",
-                f"**Reason:** {reason}"
+                f"Financial Hardship Analysis for Contact {contact.get('contact_id', 'Unknown')}",
+                f"Result: {result.upper()}",
+                f"Confidence: {confidence_percent}",
+                f"Reason: {reason}"
             ]
             
             return "\n".join(response_parts)
