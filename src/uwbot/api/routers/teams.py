@@ -77,14 +77,25 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             logger.warning("DB write (bot msg) failed: %s", exc)
             return None
 
-    # Send immediate typing indicator for ALL user messages (including empty ones)
+    # Send immediate typing indicator for user messages (but NOT for card actions)
     typing_sent = False
-    try:
-        await adapter.send_typing(service_url, conv_id)
-        typing_sent = True
-        logger.debug(f"📝 Typing indicator sent immediately for user {user_id}")
-    except Exception as e:
-        logger.warning(f"Failed to send typing indicator: {e}")
+    
+    # Comprehensive card action detection
+    is_card_action = (
+        req.type == 'invoke' or 
+        req.name in ['message/submitAction', 'message/executeAction', 'composeExtensions/submitAction'] or
+        (req.value and req.value.get('action') in ['submit_rating', 'submit_feedback', 'dismiss_feedback', 'message_reply_feedback'])
+    )
+    
+    if not is_card_action:
+        try:
+            await adapter.send_typing(service_url, conv_id)
+            typing_sent = True
+            logger.debug(f"📝 Typing indicator sent immediately for user {user_id}")
+        except Exception as e:
+            logger.warning(f"Failed to send typing indicator: {e}")
+    else:
+        logger.debug(f"🚫 Skipping typing indicator for card action: type={req.type}, name={req.name}")
     
     # Track user activity for feedback timeout (only for non-empty messages)
     if user_message.strip():  # Only track if user sent actual message
@@ -535,7 +546,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 },
                 {
                     "type": "TextBlock",
-                    "text": "I'm your **Validation Assistant**. I can help you check if contacts have hardship validation data and analyze their financial hardship claims.",
+                    "text": "I'm your **Validation Assistant**. I can help you validate data and analyze their financial hardship claims.",
                     "wrap": True,
                     "spacing": "Medium",
                 },
