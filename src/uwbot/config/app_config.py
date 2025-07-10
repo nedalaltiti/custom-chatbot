@@ -1,5 +1,5 @@
 """
-Multi-App Configuration for HR Bot - CI/CD Friendly & Scalable.
+Multi-App Configuration for Hardship Validation Bot - CI/CD Friendly & Scalable.
 
 This module manages configuration for multiple app registrations within the same Azure AD tenant.
 New instances can be added simply by updating the configuration file - no code changes required.
@@ -35,7 +35,7 @@ class AppConfig:
     name: str
     prompt_dir: Path
     logo_url: Optional[str] = None
-    hr_support_url: str = "https://hrsupport.usclarity.com/support/home"
+    hardship_support_url: str = None
 
 # Single static config for uwbot
 _app_config = AppConfig(

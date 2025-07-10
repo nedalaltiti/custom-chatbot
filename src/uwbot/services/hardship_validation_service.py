@@ -93,11 +93,20 @@ HARDSHIP DATA:
 - Hardship Description: {hardship_description}
 
 VALIDATION CRITERIA:
-1. **Financial Hardship Relevance**: The description should make sense in terms of a financial hardship
+1. **Financial Hardship Relevance**: The description should clearly indicate a financial hardship situation
 2. **Acceptable Formats**: Single words (e.g., "bankruptcy", "covid 19") or short descriptions are acceptable
 3. **Common Hardship Types**: Job loss, medical expenses, natural disasters, economic downturns, etc.
 4. **Reasonableness**: The hardship should be reasonable and verifiable
 5. **Compliance**: The hardship should comply with relevant regulations and policies
+
+EXAMPLES OF VALID HARDSHIPS:
+- "bankruptcy", "job loss", "medical bills", "covid 19", "natural disaster"
+- "home repair", "car accident", "divorce", "death in family"
+- "reduced hours", "layoff", "medical emergency", "disability"
+
+EXAMPLES OF INVALID HARDSHIPS:
+- "vacation", "luxury purchase", "entertainment", "hobby expenses"
+- "want new car", "planning trip", "shopping", "dining out"
 
 ANALYSIS REQUIREMENTS:
 Please analyze the hardship claim and provide a structured response in the following JSON format:
@@ -118,6 +127,12 @@ CONFIDENCE SCALE:
 - 0.5-0.69: Moderate confidence - some uncertainty about hardship relevance
 - 0.3-0.49: Low confidence - unclear if it's a financial hardship
 - 0.0-0.29: Very low confidence - likely not a financial hardship
+
+ANALYSIS FOCUS:
+- Focus on whether the hardship description indicates genuine financial difficulty
+- Consider if the hardship is temporary or ongoing
+- Evaluate if the hardship affects the person's ability to meet financial obligations
+- Assess if the hardship is beyond the person's control
 
 Please provide your analysis in the exact JSON format specified above.
 """
@@ -196,15 +211,43 @@ Please provide your analysis in the exact JSON format specified above.
         """Format the hardship analysis into a user-friendly response."""
         
         contact_id = hardship_data.get('contact_id', 'Unknown')
+        financial_hardship = hardship_data.get('financial_hardship', '')
+        hardship_description = hardship_data.get('hardship_description', '')
         
         # Format confidence as percentage with one decimal place
         confidence_percent = f"{analysis.confidence * 100:.1f}%"
         
-        response_parts = [
-            f"Financial Hardship Analysis for Contact {contact_id}",
-            f"Result: {analysis.result.value.upper()}",
-            f"Confidence: {confidence_percent}",
-            f"Reason: {analysis.reason}"
-        ]
+        # Build organized response
+        response_parts = []
+        
+        # Header with status icon
+        if analysis.result == HardshipValidity.PASS:
+            response_parts.append(f"✅ Contact {contact_id} has hardship validation data \n")
+        else:
+            response_parts.append(f"❌ Contact {contact_id} hardship validation failed \n")
+        
+        # Hardship information section
+        hardship_info = []
+        if hardship_description:
+            hardship_info.append(f"\n • Hardship Description: {hardship_description}")
+        if financial_hardship:
+            hardship_info.append(f"\n • Financial Hardship Status: {financial_hardship}")
+        
+        if hardship_info:
+            response_parts.append("**Hardship Information:** \n")
+            response_parts.extend(hardship_info)
+        
+        # Analysis results section
+        response_parts.append("")
+        response_parts.append("**Validation Analysis:** \n")
+        response_parts.append(f"• Result: **{analysis.result.value.upper()}** \n")
+        response_parts.append(f"• Confidence: **{confidence_percent}** \n")
+        response_parts.append(f"• Reason: {analysis.reason} \n")
+        
+        # Summary statement
+        if analysis.result == HardshipValidity.PASS:
+            response_parts.append("")
+        else:
+            response_parts.append("")
         
         return "\n".join(response_parts) 

@@ -136,14 +136,6 @@ class TeamsAdapter:
             "type": "message", 
             "text": text, 
             "textFormat": "markdown",
-            "entities": [
-                {
-                    "type": "https://schema.org/Message",
-                    "@type": "Message",
-                    "@context": "https://schema.org",
-                    "additionalType": ["AIGeneratedContent"]  # AI label as per Microsoft docs
-                }
-            ],
             "channelData": {
                 "feedbackLoop": {
                     "type": "default"  # Enable Teams built-in feedback buttons
@@ -441,12 +433,6 @@ class _MicrosoftTeamsStreamer:
                     "streamId": self.stream_id,
                     "streamType": "final",
                     # Note: No streamSequence for final message as per Microsoft docs
-                },
-                {
-                    "type": "https://schema.org/Message",
-                    "@type": "Message", 
-                    "@context": "https://schema.org",
-                    "additionalType": ["AIGeneratedContent"]  # AI label
                 }
             ],
             "channelData": {
