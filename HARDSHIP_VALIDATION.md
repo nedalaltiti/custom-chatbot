@@ -24,11 +24,9 @@ SELECT contacts.id,
        contacts.leadstatus,
        financial_hardship.f_string as financial_hardship,
        hardship_description.f_string as hardship_description,
-       financial_hardship_details.f_string as financial_hardship_details
 FROM contacts
 LEFT JOIN contacts_userfields financial_hardship ON contacts.id = financial_hardship.contact_id AND financial_hardship.custom_id = 322256
 LEFT JOIN contacts_userfields hardship_description ON contacts.id = hardship_description.contact_id AND hardship_description.custom_id = 322271
-LEFT JOIN contacts_userfields financial_hardship_details ON contacts.id = financial_hardship_details.contact_id AND financial_hardship_details.custom_id = 322256
 WHERE contacts.id = :contact_id
 ```
 
