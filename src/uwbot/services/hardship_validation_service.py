@@ -133,6 +133,7 @@ ANALYSIS FOCUS:
 - Consider if the hardship is temporary or ongoing
 - Evaluate if the hardship affects the person's ability to meet financial obligations
 - Assess if the hardship is beyond the person's control
+- Avoid mentioning the examples of valid and invalid hardships in the response
 
 Please provide your analysis in the exact JSON format specified above.
 """
