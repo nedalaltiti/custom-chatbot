@@ -13,7 +13,6 @@ class TeamsUser(BaseModel):
     id: str
     name: Optional[str] = None
     aad_object_id: Optional[str] = Field(None, alias="aadObjectId")
-    job_title: Optional[str] = Field(None, alias="jobTitle")
     display_name: Optional[str] = Field(None, alias="displayName")
     email: Optional[str] = None
 

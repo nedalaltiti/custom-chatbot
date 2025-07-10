@@ -113,7 +113,7 @@ async def _warmup_services():
 
 app = FastAPI(
     title=settings.app_name,
-    description="UWBot Teams-bot backend",
+    description="UWBot Validation Bot backend",
     version="1.0.0",
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,

@@ -3,7 +3,7 @@ Gemini LLM service implementation.
 
 This module provides:
 1. Integration with Google's Gemini model via Vertex AI
-2. Both standard and streaming response modes
+2. Standard response mode
 3. Conversation and prompt handling
 4. Error handling and recovery
 """
@@ -11,7 +11,7 @@ This module provides:
 import logging
 import asyncio
 import os
-from typing import List, Dict, AsyncGenerator
+from typing import List, Dict
 import time
 import random
 
@@ -40,7 +40,7 @@ class GeminiService:
     Service for interacting with Google's Gemini models via Vertex AI.
     
     Provides:
-    - Standard and streaming response modes
+    - Standard response mode
     - Context handling for conversations
     - Error recovery and logging
     """
@@ -192,81 +192,6 @@ class GeminiService:
             message="Unexpected error in retry logic",
             user_message="I'm having trouble processing your request right now."
         ))
-    
-    async def analyze_messages_streaming(self, messages: List[str]) -> AsyncGenerator[str, None]:
-        """
-        Analyze messages with streaming response and retry logic.
-        
-        Args:
-            messages: List of message strings
-            
-        Yields:
-            Chunks of the response as they are generated
-        """
-        if not messages:
-            yield "I need a question to answer."
-            return
-        
-        max_retries = 2  # Fewer retries for streaming to avoid long delays
-        base_delay = 0.5
-        
-        for attempt in range(1, max_retries + 1):
-            try:
-                # Ensure model is available
-                self._ensure_model()
-
-                # Get the last message as the current query
-                current_message = messages[-1]
-                
-                # Get previous messages as history
-                history = messages[:-1] if len(messages) > 1 else []
-                
-                model = self._model
-
-                prompt = "\n".join(history + [current_message]) if history else current_message
-                
-                # Vertex AI streaming
-                response = await asyncio.to_thread(
-                    model.generate_content,
-                    prompt,
-                    generation_config=self.generation_config,
-                    safety_settings=self.safety_settings,
-                    stream=True,
-                )
-                
-                chunk_count = 0
-                for chunk in response:
-                    if hasattr(chunk, "text") and chunk.text:
-                        chunk_count += 1
-                        yield chunk.text
-                
-                # If we got here, streaming was successful
-                if chunk_count > 0:
-                    logger.debug(f"Streaming completed successfully with {chunk_count} chunks")
-                return
-                
-            except (google_api_exceptions.ServiceUnavailable,
-                    google_api_exceptions.DeadlineExceeded,
-                    ConnectionError,
-                    OSError) as e:
-                logger.warning(f"Streaming network error on attempt {attempt}/{max_retries}: {str(e)}")
-                if attempt < max_retries:
-                    delay = base_delay * attempt + random.uniform(0.1, 0.2)
-                    logger.info(f"Retrying streaming in {delay:.1f}s...")
-                    await asyncio.sleep(delay)
-                    continue
-                else:
-                    yield f"I'm having trouble connecting to the AI service right now. Please try your request again."
-                    return
-            except Exception as e:
-                logger.error(f"Error in streaming response on attempt {attempt}: {str(e)}")
-                if attempt < max_retries:
-                    delay = base_delay * attempt
-                    await asyncio.sleep(delay)
-                    continue
-                else:
-                    yield f"I'm having trouble processing your request right now: {str(e)}"
-                    return
     
     async def test_connection(self) -> bool:
         """

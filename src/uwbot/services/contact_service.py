@@ -56,7 +56,7 @@ class ContactService:
                         "confidence": 0.0,
                         "reason": "No hardship data available for analysis"
                     },
-                    "formatted_response": f"No hardship data found for contact {contact_id}. Please ensure hardship information has been provided."
+                    "formatted_response": f"❌ Contact {contact_id} does not have hardship validation data. \nNo hardship information has been recorded for this contact."
                 }
             
             # Analyze hardship validity
@@ -68,7 +68,7 @@ class ContactService:
                     "contact_id": contact_id,
                     "error": str(analysis_result.error),
                     "analysis": None,
-                    "formatted_response": f"Unable to analyze hardship data for contact {contact_id}. Please try again or contact support."
+                    "formatted_response": f"❌ Contact {contact_id} hardship validation error.\nUnable to analyze hardship data for contact {contact_id}. Please try again or contact support."
                 }
             
             analysis = analysis_result.value
@@ -91,7 +91,7 @@ class ContactService:
                 "contact_id": contact_id,
                 "error": str(e),
                 "analysis": None,
-                "formatted_response": f"Error analyzing hardship data for contact {contact_id}. Please try again."
+                "formatted_response": f"❌ Contact {contact_id} hardship validation error.\nError analyzing hardship data for contact {contact_id}. Please try again."
             }
     
     async def get_contact_with_hardship_data(self, contact_id: int) -> Optional[Dict[str, Any]]:
@@ -158,7 +158,7 @@ class ContactService:
             Formatted string response
         """
         if not contact:
-            return "No hardship data found for that contact ID. Please ensure hardship information has been provided."
+            return "❌ No hardship data found for that contact ID."
         
         # If there's a formatted response already provided, use it
         if contact.get('formatted_response'):
@@ -166,9 +166,21 @@ class ContactService:
         
         # If there's an error, return the error message
         if contact.get('error'):
-            return f"Error analyzing hardship data: {contact['error']}"
+            return f"❌ Error analyzing hardship data: {contact['error']}"
         
-        # If there's analysis data, format it
+        contact_id = contact.get('contact_id', 'Unknown')
+        
+        # Check if there's hardship data available
+        hardship_data = contact.get('hardship_data', {})
+        financial_hardship = hardship_data.get('financial_hardship', '')
+        hardship_description = hardship_data.get('hardship_description', '')
+        
+        has_hardship_data = any([financial_hardship, hardship_description])
+        
+        if not has_hardship_data:
+            return f"❌ Contact {contact_id} does not have hardship validation data.\n No hardship information has been recorded for this contact."
+        
+        # If there's analysis data, format it with organized structure
         analysis = contact.get('analysis')
         if analysis:
             result = analysis.get('result', 'unknown')
@@ -178,16 +190,44 @@ class ContactService:
             # Format confidence as percentage with one decimal place
             confidence_percent = f"{confidence * 100:.1f}%"
             
-            response_parts = [
-                f"Financial Hardship Analysis for Contact {contact.get('contact_id', 'Unknown')}",
-                f"Result: {result.upper()}",
-                f"Confidence: {confidence_percent}",
-                f"Reason: {reason}"
-            ]
+            # Build organized response
+            response_parts = []
+            
+            # Header with status icon
+            if result == 'pass':
+                response_parts.append(f"✅ Contact {contact_id} has hardship validation data")
+            else:
+                response_parts.append(f"❌ Contact {contact_id} hardship validation failed")
+            
+            # Hardship information section
+            hardship_info = []
+            if hardship_description:
+                hardship_info.append(f"• Hardship Description: {hardship_description}")
+            if financial_hardship:
+                hardship_info.append(f"• Financial Hardship Status: {financial_hardship}")
+            
+            if hardship_info:
+                response_parts.append("Hardship Information:")
+                response_parts.extend(hardship_info)
+            
+            # Analysis results section
+            response_parts.append("")
+            response_parts.append("Validation Analysis:")
+            response_parts.append(f"• Result: {result.upper()}")
+            response_parts.append(f"• Confidence: {confidence_percent}")
+            response_parts.append(f"• Reason: {reason}")
+            
+            # Summary statement
+            if result == 'pass':
+                response_parts.append("")
+                response_parts.append("The hardship validation data is available for this contact.")
+            else:
+                response_parts.append("")
+                response_parts.append("The hardship validation data requires review or additional information.")
             
             return "\n".join(response_parts)
         
-        return "Unable to format hardship analysis results. Please try again."
+        return "❌ Unable to format hardship analysis results. Please try again."
     
     def extract_contact_id_from_message(self, message: str) -> Optional[int]:
         """

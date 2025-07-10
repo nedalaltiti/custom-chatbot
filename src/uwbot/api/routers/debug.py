@@ -3,13 +3,10 @@ from pydantic import BaseModel
 from typing import Optional
 import time
 import logging
-from uwbot.services.processor import ChatProcessor
 from uwbot.services.message_service import MessageService
 from uwbot.services.session_tracker import session_tracker
-from uwbot.utils.di import get_content_classification_service, get_contact_service, get_hardship_validation_service
+from uwbot.utils.di import get_contact_service
 from uwbot.config.settings import settings
-from uwbot.core.adapters.llm_gemini import LLMServiceAdapter
-from uwbot.services.gemini_service import GeminiService
 from uwbot.config.app_config import get_app_config
 
 logger = logging.getLogger(__name__)
@@ -24,8 +21,6 @@ class DebugChatRequest(BaseModel):
 class DebugChatResponse(BaseModel):
     user_message: str
     bot_response: str
-    conversation_flow: str
-    confidence: float
     processing_time: float
     app_instance: str
     bot_name: str
@@ -41,26 +36,15 @@ class ContactQueryResponse(BaseModel):
     success: bool
     processing_time: float
 
-
-
-# In-memory conversation storage for debug sessions
-debug_memories = {}
-
-# Commented out context/memory logic for previous questions
-# async def get_or_create_debug_memory(user_id: str) -> dict:
-#     if user_id not in debug_memories:
-#         debug_memories[user_id] = {"messages": []}
-#     return debug_memories[user_id]
-
 @router.post("/contact", response_model=ContactQueryResponse)
 async def debug_contact_query(req: ContactQueryRequest):
-    """Debug endpoint for testing hardship validation analysis."""
+    """Debug endpoint for testing hardship validation data check."""
     start_time = time.time()
     
     try:
         contact_service = get_contact_service()
         
-        # Query hardship data and analyze validity
+        # Check hardship validation data
         hardship_result = await contact_service.get_contact_by_id(req.contact_id)
         hardship_response = contact_service.format_contact_response(hardship_result)
         
@@ -75,7 +59,7 @@ async def debug_contact_query(req: ContactQueryRequest):
         )
         
     except Exception as e:
-        logger.error(f"Hardship analysis error: {e}")
+        logger.error(f"Hardship validation check error: {e}")
         processing_time = time.time() - start_time
         return ContactQueryResponse(
             contact_id=req.contact_id,
@@ -85,11 +69,9 @@ async def debug_contact_query(req: ContactQueryRequest):
             processing_time=round(processing_time, 2)
         )
 
-
-
 @router.post("/chat", response_model=DebugChatResponse)
 async def debug_chat(req: DebugChatRequest):
-    """Debug endpoint that returns actual AI response for testing."""
+    """Debug endpoint that returns hardship validation check response for testing."""
     import time
     start_time = time.time()
     
@@ -107,15 +89,6 @@ async def debug_chat(req: DebugChatRequest):
         
         # Initialize services
         message_service = MessageService()
-        chat_processor = ChatProcessor()
-        classification_service = get_content_classification_service()
-        
-        # Analyze conversation flow
-        analysis = await classification_service.analyze_conversation_flow(
-            user_message=req.text,
-            conversation_context=None,
-            response_type="standard"
-        )
         
         # Save user message to database
         user_msg_id = await message_service.add_message(
@@ -130,13 +103,16 @@ async def debug_chat(req: DebugChatRequest):
             reply_to_id=None,
         )
         
-        # Get AI response
-        result = await chat_processor.process_message(req.text, chat_history=None, user_id=req.user_id)
+        # Check if message contains contact ID
+        contact_service = get_contact_service()
+        contact_id = contact_service.extract_contact_id_from_message(req.text)
         
         processing_time = time.time() - start_time
         
-        if result.is_success():
-            bot_response = result.unwrap()["response"].strip()
+        if contact_id:
+            # Check hardship validation data
+            result = await contact_service.get_contact_by_id(contact_id)
+            bot_response = contact_service.format_contact_response(result)
             
             # Save bot response to database
             await message_service.add_message(
@@ -147,23 +123,21 @@ async def debug_chat(req: DebugChatRequest):
                 session_id=session_id,
                 role="bot",
                 text=bot_response,
-                intent=classification_service.get_message_intent(analysis),
+                intent="validation",
                 reply_to_id=user_msg_id,
             )
-            
-            return DebugChatResponse(
-                user_message=req.text,
-                bot_response=bot_response,
-                conversation_flow=analysis.flow_type.value,
-                confidence=analysis.confidence,
-                processing_time=round(processing_time, 2),
-                app_instance=app_config.instance_id,
-                bot_name=bot_name
-            )
         else:
-            # Even on error, save to database
-            error_response = "Sorry, I encountered an error processing your request."
+            # No contact ID found
+            bot_response = (
+                "I'm here to help you check hardship validation data. "
+                "Please provide a contact ID to check if hardship data exists.\n\n"
+                "Examples:\n"
+                "• Contact 123\n"
+                "• Check hardship for contact 456\n"
+                "• Validate hardship for contact 789"
+            )
             
+            # Save bot response to database
             await message_service.add_message(
                 bot_name=bot_name,
                 env="development",
@@ -171,20 +145,18 @@ async def debug_chat(req: DebugChatRequest):
                 user_id=req.user_id,
                 session_id=session_id,
                 role="bot",
-                text=error_response,
-                intent="error",
+                text=bot_response,
+                intent="help",
                 reply_to_id=user_msg_id,
             )
-            
-            return DebugChatResponse(
-                user_message=req.text,
-                bot_response=error_response,
-                conversation_flow="error",
-                confidence=0.0,
-                processing_time=round(processing_time, 2),
-                app_instance=app_config.instance_id,
-                bot_name=bot_name
-            )
+        
+        return DebugChatResponse(
+            user_message=req.text,
+            bot_response=bot_response,
+            processing_time=round(processing_time, 2),
+            app_instance=app_config.instance_id,
+            bot_name=bot_name
+        )
             
     except Exception as e:
         logger.error(f"Debug chat error: {e}")
@@ -192,16 +164,7 @@ async def debug_chat(req: DebugChatRequest):
         return DebugChatResponse(
             user_message=req.text,
             bot_response=f"Error: {str(e)}",
-            conversation_flow="error",
-            confidence=0.0,
             processing_time=round(processing_time, 2),
             app_instance=app_config.instance_id,
             bot_name=bot_name
-        )
-
-@router.post("/clear-memory")
-async def clear_debug_memory(user_id: str):
-    """Clear debug conversation memory for a user."""
-    if user_id in debug_memories:
-        del debug_memories[user_id]
-    return {"status": "success", "message": f"Cleared memory for user {user_id}"} 
+        ) 

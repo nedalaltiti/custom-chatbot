@@ -1,19 +1,20 @@
-# hrbot/api/routers/teams.py
+# uwbot/api/routers/teams.py
 
+import asyncio
 from fastapi import APIRouter, BackgroundTasks
 from uwbot.services.feedback_service import FeedbackService
 from uwbot.services.message_service import MessageService
 from uwbot.infrastructure.teams_adapter import TeamsAdapter
 from uwbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
-from uwbot.services.processor import ChatProcessor
-from uwbot.infrastructure.cards import create_welcome_card, create_feedback_card
+from uwbot.infrastructure.cards import create_feedback_card
 from uwbot.config.settings import settings
-from uwbot.utils.di import get_intent_service, get_content_classification_service, get_contact_service
+from uwbot.utils.di import get_contact_service
 from uwbot.services.session_tracker import session_tracker 
-from uwbot.utils.message import split_greeting, is_pure_greeting
 from uwbot.utils.bot_name import get_bot_name
-from uwbot.services.content_classification_service import ConversationFlow
-import logging, re
+from uwbot.utils.message import is_pure_greeting
+from uwbot.utils.intent import classify_intent
+from uwbot.utils.di import get_llm
+import logging
 from datetime import datetime
 from pydantic import BaseModel
 import time
@@ -23,100 +24,18 @@ logger = logging.getLogger(__name__)
 router           = APIRouter()
 adapter          = TeamsAdapter()
 feedback_service = FeedbackService()
-chat_processor   = ChatProcessor()
 message_service  = MessageService()
 
 # in-memory state
 first_time_users = set()    # user_ids pending their first greeting
-user_states      = {}       # user_id → {awaiting_confirmation, feedback_shown, use_streaming, last_bot_response_time}
-user_memories    = {}       # user_id → ConversationBufferMemory
+user_states      = {}       # user_id → {feedback_shown, last_bot_response_time}
 feedback_cards   = {}       # conv_id → AdaptiveCard activity_id
-
-# Pattern to detect if response already contains the "anything else" question
-_HAS_ANYTHING_ELSE_RE = re.compile(
-    r"(?:Is there anything else I can help you with\?|"
-    r"Anything else I can help you with\?|"
-    r"Can I help you with anything else\?)",
-    re.I
-)
-
-class ConversationBufferMemory:
-    """Simple per-user chat buffer."""
-    def __init__(self):
-        self.messages = []
-
-    def add_user_message(self, text: str):
-        self.messages.append({"role":"user","content":text})
-
-    def add_ai_message(self, text: str):
-        self.messages.append({"role":"ai","content":text})
-
-
-# Commented out context/memory logic for previous questions
-# async def get_or_create_memory(user_id: str) -> ConversationBufferMemory:
-#     if user_id not in user_memories:
-#         user_memories[user_id] = ConversationBufferMemory()
-#     return user_memories[user_id]
-
-
-async def _handle_conversation_ending(
-    analysis, user_id: str, service_url: str, conv_id: str, 
-    state: dict, user_message: str, session_id: str, reply_to_id: str = None
-):
-    """Handle conversation ending scenarios with appropriate feedback."""
-    
-    # Save the user's message first
-    user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, reply_to_id)
-    
-    # Get appropriate response message
-    response_message = get_content_classification_service().get_response_message(analysis)
-    if response_message:
-        # Store bot message and get its database ID
-        bot_msg_id = await message_service.add_message(
-            bot_name=get_bot_name(),
-            env="development",
-            channel="teams",
-            user_id=user_id,
-            session_id=session_id,
-            role="bot",
-            text=response_message,
-            intent=get_content_classification_service().get_message_intent(analysis),
-            reply_to_id=user_msg_id,
-        )
-        
-        # Send message and get Teams activity ID
-        activity_id = await adapter.send_message(service_url, conv_id, response_message)
-        
-        # Track the mapping
-        if bot_msg_id and activity_id:
-            feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-            logger.debug(f"Tracked ending mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-    
-    # Send feedback card if required
-    if get_content_classification_service().should_send_feedback(analysis):
-        logger.info(f"Sending feedback for {analysis.flow_type.value} scenario")
-        
-        feedback_service.cancel_pending_feedback(user_id)
-        # Send appropriate feedback card based on classification
-        act_id = await feedback_service.send_feedback_prompt(service_url, conv_id)
-        if act_id:
-            feedback_cards[conv_id] = act_id
-            state["awaiting_feedback"] = True
-            state["feedback_shown"] = True
-    
-    # Clear session for ending scenarios
-    _clear_user_session(user_id)
-
 
 async def _ensure_user_message_saved(user_message: str, user_id: str, session_id: str, reply_to_id: str = None) -> int:
     """
-    Ensure user message is saved to both memory and database.
+    Ensure user message is saved to database.
     Returns the message ID.
     """
-    # Save to memory
-    # memory = await get_or_create_memory(user_id)
-    # memory.add_user_message(user_message)
-    
     # Save to database
     user_msg_id = await message_service.add_message(
         bot_name   = get_bot_name(),
@@ -131,19 +50,16 @@ async def _ensure_user_message_saved(user_message: str, user_id: str, session_id
     
     return user_msg_id
 
-
 @router.post("/")
 async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundTasks):
     user_message = req.text or ""
     user_id      = req.from_.id
     user_name    = req.from_.name
-    aad_object_id = req.from_.aad_object_id
     service_url  = req.service_url
     conv_id      = req.conversation.id
-    message_id   = req.reply_to_id 
 
-    # Helper function for database persistence - defined early to avoid UnboundLocalError
-    async def _persist_bot_msg(reply_id: int, text: str, intent: str = "CONTINUE") -> int | None:
+    # Helper function for database persistence
+    async def _persist_bot_msg(reply_id: int, text: str, intent: str = "validation") -> int | None:
         try:
             bot_msg_id = await message_service.add_message(
                 bot_name   = get_bot_name(),
@@ -161,24 +77,26 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             logger.warning("DB write (bot msg) failed: %s", exc)
             return None
 
+    # Send immediate typing indicator for ALL user messages (including empty ones)
+    typing_sent = False
+    try:
+        await adapter.send_typing(service_url, conv_id)
+        typing_sent = True
+        logger.debug(f"📝 Typing indicator sent immediately for user {user_id}")
+    except Exception as e:
+        logger.warning(f"Failed to send typing indicator: {e}")
+    
+    # Track user activity for feedback timeout (only for non-empty messages)
     if user_message.strip():  # Only track if user sent actual message
         feedback_service.track_user_activity(user_id)
-
-    # Send immediate typing indicator for user feedback
-    if not req.value and user_message.strip():
-        try:
-            await adapter.send_typing(service_url, conv_id)
-        except Exception as e:
-            logger.warning(f"Failed to send typing indicator: {e}")
+        logger.debug(f"🔄 User activity tracked for {user_id} - feedback timeout reset")
     
     state = user_states.get(user_id)
     if state is None:                        # first ever message from this user
         logger.info(f"Creating new session for user {user_id} - first message ever")
         state = {
-            "awaiting_more_help": False,     # Waiting for yes/no to "anything else?"
             "awaiting_feedback":  False,
             "feedback_shown":     False,
-            "use_streaming":      True,
             "session_id":         session_tracker.get(user_id),
             "greeting_shown":     False,     # Track if greeting card has been shown in this session   
             "last_bot_response_time": None,  # Track when bot last responded
@@ -192,9 +110,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         if "session_id" not in state:
             logger.info(f"Rebuilding session for returning user {user_id} - session was cleared, this is a NEW session")
             state["session_id"] = session_tracker.get(user_id)
-            # Clear any residual memory from previous session to prevent context pollution
-            user_memories.pop(user_id, None)
-            # Reset greeting shown flag for new session - this is key!
+            # Reset greeting shown flag for new session
             state["greeting_shown"] = False
             state["session_started"] = True  # Mark this as a new session start
             logger.info(f"Reset greeting_shown=False for user {user_id} - new session after previous ended")
@@ -202,24 +118,12 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             # Continuing existing session
             state.setdefault("session_started", False)
             
-        state.setdefault("awaiting_more_help", False)
         state.setdefault("awaiting_feedback", False)
         state.setdefault("feedback_shown", False)
-        state.setdefault("use_streaming", True)
         state.setdefault("greeting_shown", False)
         state.setdefault("last_bot_response_time", None)
 
     session_id = state["session_id"]
-    
-    # Get job title for system override
-    try:
-        profile   = await adapter.get_user_profile(aad_object_id)
-        job_title = profile.get("jobTitle", "Unknown")
-    except Exception:
-        job_title = "Unknown"
-
-    # Add job title to system context
-    system_override = f"Current user job title: {job_title}"
 
     # Handle ALL invoke requests to prevent "Unable to reach app" errors
     if req.type == 'invoke':
@@ -462,8 +366,12 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                     )
                     act_id = feedback_cards.get(conv_id)
                     if act_id:
+                        # Update the existing card instead of creating a new one
                         await adapter.update_card(service_url, conv_id, act_id, card)
+                        logger.info(f"Updated existing feedback card for conversation {conv_id} with rating {rating}")
                     else:
+                        # Only create new card if no existing card found
+                        logger.warning(f"No existing feedback card found for conversation {conv_id}, creating new one")
                         new_act = await adapter.send_card(service_url, conv_id, card)
                         if new_act:
                             feedback_cards[conv_id] = new_act
@@ -479,9 +387,13 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
 
         if action == "dismiss_feedback":
             try:
+                # Send typing indicator before response (only if not already sent)
+                if not typing_sent:
+                    await adapter.send_typing(service_url, conv_id)
+                
                 await adapter.send_message(
                     service_url, conv_id,
-                    "No problem! Feel free to reach out anytime you need HR assistance."
+                    "No problem! Feel free to reach out anytime you need validation assistance."
                 )
                 
                 # Remove current feedback card and end session
@@ -547,6 +459,9 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 logger.error(f"Error processing submit_feedback: {e}")
                 # Always send a success response to prevent "Unable to reach app" errors
                 try:
+                    # Send typing indicator before fallback message (only if not already sent)
+                    if not typing_sent:
+                        await adapter.send_typing(service_url, conv_id)
                     await adapter.send_message(service_url, conv_id, "Thank you for your feedback!")
                 except Exception as send_error:
                     logger.error(f"Failed to send fallback message: {send_error}")
@@ -588,157 +503,127 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
 
         return TeamsActivityResponse(text="")
 
-    if state.get("awaiting_more_help"):
-        logger.info(f"User is responding to 'anything else?' question with: '{user_message}'")
+    # Check for pure greetings using message.py utility
+    is_pure_greeting_result = is_pure_greeting(user_message)
+    
+    # Show welcome card for pure greetings or first-time users
+    should_show_greeting = False
+    greeting_reason = ""
+    
+    if is_pure_greeting_result:
+        should_show_greeting = True
+        greeting_reason = "pure greeting"
+    elif user_id in first_time_users and not state.get("greeting_shown", False):
+        should_show_greeting = True
+        greeting_reason = "first time user"
+    
+    if should_show_greeting:
+        logger.info(f"Showing welcome card to user {user_id} - {greeting_reason}")
         
-        # Use LLM-based intent detection service
-        intent_service = get_intent_service()
-        intent = await intent_service.analyze_conversation_intent(
-            user_message=user_message,
-            conversation_context=None
-        )
+        # Create hardship validation specific welcome card
+        welcome_card = {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": [
+                {
+                    "type": "TextBlock",
+                    "text": f"Hi {user_name} 👋",
+                    "weight": "Bolder",
+                    "size": "Large",
+                    "color": "Accent"
+                },
+                {
+                    "type": "TextBlock",
+                    "text": "I'm your **Validation Assistant**. I can help you check if contacts have hardship validation data and analyze their financial hardship claims.",
+                    "wrap": True,
+                    "spacing": "Medium",
+                },
+            ]
+        }
         
-        logger.info(f"Intent detection: user_message='{user_message}', detected_intent='{intent}'")
+        await adapter.send_card(service_url, conv_id, welcome_card)
         
-        if intent == "END":
-            # User wants to end the conversation
-            logger.info(f"User {user_id} wants to end conversation based on intent detection")
-            state["awaiting_more_help"] = False
-            
-            # Save the user's message before ending
+        # Mark greeting as shown and remove from first-time users
+        state["greeting_shown"] = True
+        state["session_started"] = False
+        first_time_users.discard(user_id)
+        
+        # Save user message to database for pure greetings
+        if is_pure_greeting_result:
             await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
-            
-            await adapter.send_message(
-                service_url, conv_id,
-                "Thank you for using our HR Assistant!"
-            )
-            
-            # Send feedback card
-            act_id = await feedback_service.send_feedback_prompt(service_url, conv_id)
-            if act_id:
-                feedback_cards[conv_id] = act_id
-                state["awaiting_feedback"] = True
-                state["feedback_shown"] = True
-            
-            _clear_user_session(user_id)
+            logger.info(f"Pure greeting processed for user {user_id}, ending request")
             return TeamsActivityResponse(text="")
         else:
-            # User wants to continue (CONTINUE) - process their message normally
-            logger.info(f"User wants to continue conversation: '{user_message}'")
-            state["awaiting_more_help"] = False
-            # Continue processing the message normally below
+            # First-time user with a question - continue processing their request
+            logger.info(f"First-time user greeting shown, continuing to process their request: '{user_message}'")
+            # Reset typing_sent flag so we can show typing indicator for the actual message processing
+            typing_sent = False
+            # Continue processing the message below
 
-    greet_only, user_payload = split_greeting(user_message)
-    is_only_greeting = is_pure_greeting(user_message)
-    
-    logger.debug(f"Greeting analysis for '{user_message}': greet_only={greet_only}, has_payload={bool(user_payload)}, is_pure_greeting={is_only_greeting}")
-
-    # Show greeting card for first-time users if ANY greeting is detected
-    if (greet_only or user_payload) and not state.get("awaiting_more_help"):
-        # Check if we should show greeting card:
-        # 1. First-time user (in first_time_users set) - always show
-        # 2. OR returning user starting a new session (greeting_shown=False AND it's a greeting)
-        is_first_time = user_id in first_time_users
-        is_new_session_greeting = not state.get("greeting_shown", False)
-        
-        should_show_greeting = is_first_time or is_new_session_greeting
-        
-        logger.info(f"Greeting logic for user {user_id}: is_first_time={is_first_time}, is_new_session_greeting={is_new_session_greeting}, should_show_greeting={should_show_greeting}")
-        
-        if should_show_greeting:
-            # Show welcome card ONLY once per session
-            logger.info(f"Showing welcome card to user {user_id} (first_time={is_first_time}, new_session={is_new_session_greeting})")
-            card = create_welcome_card(user_name=user_name)
-            await adapter.send_card(service_url, conv_id, card)
-            
-            # IMPORTANT: Mark greeting as shown immediately to prevent duplicates
-            state["greeting_shown"] = True
-            state["session_started"] = False  # Session officially started now
-            
-            # Remove from first_time_users if present
-            first_time_users.discard(user_id)
-            
-            # If there was additional content after greeting, process it
-            if user_payload:
-                user_message = user_payload.strip()
-                logger.info(f"Processing additional content after greeting: '{user_message}'")
-                # Show typing indicator for processing the question
-                await adapter.send_typing(service_url, conv_id)
-                # Continue processing the question below...
-            else:
-                # Just greeting, record it and return
-                logger.info(f"Pure greeting processed for user {user_id}, ending request")
-                await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
-                return TeamsActivityResponse(text="")
-        else:
-            # User has already seen greeting in this session
-            logger.info(f"User {user_id} already saw greeting in this session (greeting_shown={state.get('greeting_shown')})")
-            if user_payload:
-                # Greeting + question - process the question
-                user_message = user_payload.strip()
-                logger.info(f"Processing question from repeat greeting: '{user_message}'")
-                # Show typing indicator for processing the question
-                await adapter.send_typing(service_url, conv_id)
-                # Continue processing the question below...
-            elif is_only_greeting:
-                # Pure greeting in same session - give a friendly response without card
-                logger.info(f"Returning user greeting again in same session: '{user_message}' - sending simple response")
-                user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
-                
-                # Store bot message and get its database ID
-                bot_msg_id = await _persist_bot_msg(user_msg_id, "Hello again! How can I help you today?", "greeting")
-                
-                # Send message and get Teams activity ID
-                activity_id = await adapter.send_message(service_url, conv_id, "Hello again! How can I help you today?")
-                
-                # Track the mapping
-                if bot_msg_id and activity_id:
-                    feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-                    logger.debug(f"Tracked greeting mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-                
-                return TeamsActivityResponse(text="")
-            else:
-                # Not a pure greeting but detected as greeting - send helper message
-                logger.info(f"Ambiguous greeting in same session: '{user_message}' - sending helper response")
-                user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
-                
-                # Store bot message and get its database ID
-                bot_msg_id = await _persist_bot_msg(user_msg_id, "I am here to assist with your inquiries. How can I help you today?", "greeting")
-                
-                # Send message and get Teams activity ID
-                activity_id = await adapter.send_message(service_url, conv_id, "I am here to assist with your inquiries. How can I help you today?")
-                
-                # Track the mapping
-                if bot_msg_id and activity_id:
-                    feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-                    logger.debug(f"Tracked greeting mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-                
-                return TeamsActivityResponse(text="")
-    elif user_payload and not greet_only:
-        # If greeting had additional content but not first time, use that as the actual message
-        user_message = user_payload.strip()
-
-    # Analyze conversation flow using intelligent classification
-    classification_service = get_content_classification_service()
-    analysis = await classification_service.analyze_conversation_flow(
-        user_message=user_message,
-        conversation_context=None,
-        response_type="standard"  
-    )
-    
-    logger.info(f"Conversation flow analysis: {analysis.flow_type.value} (confidence: {analysis.confidence}, feedback_timing: {analysis.feedback_timing})")
-    
-    should_end = classification_service.should_end_conversation(analysis)
-
-    # Handle conversation ending scenarios immediately
-    if should_end:
-        await _handle_conversation_ending(
-            analysis, user_id, service_url, conv_id, state, 
-            user_message, session_id, req.reply_to_id
-        )
+    # Handle contact queries for hardship validation
+    # Only process if we have actual message content
+    if not user_message.strip():
+        logger.info(f"Empty message from user {user_id}, no processing needed")
         return TeamsActivityResponse(text="")
     
-    # Handle contact queries before general processing
+    # Check if user is ending the conversation using intent classification
+    try:
+        llm_service = get_llm()
+        intent = await classify_intent(llm_service, user_message)
+        is_ending_conversation = intent == "END"
+        logger.debug(f"Intent classification for '{user_message}': {intent}")
+    except Exception as e:
+        logger.warning(f"Intent classification failed: {e}, defaulting to continue")
+        is_ending_conversation = False
+    
+    if is_ending_conversation:
+        logger.info(f"User {user_id} is ending conversation with: '{user_message}'")
+        
+        # Save user message first
+        user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
+        
+        # Send typing indicator before response
+        if not typing_sent:
+            try:
+                await adapter.send_typing(service_url, conv_id)
+            except Exception as e:
+                logger.warning(f"Failed to send typing indicator: {e}")
+        
+        # Send friendly goodbye message
+        goodbye_message = "You're welcome! I'm glad I could help you with your validation check. Feel free to reach out anytime you need to validate hardship data for other contacts. Have a great day! 👋"
+        
+        # Store bot message and get its database ID
+        bot_msg_id = await _persist_bot_msg(user_msg_id, goodbye_message, "goodbye")
+        
+        # Send message and get Teams activity ID
+        activity_id = await adapter.send_message(service_url, conv_id, goodbye_message)
+        
+        # Track the mapping
+        if bot_msg_id and activity_id:
+            feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
+            logger.debug(f"Tracked goodbye mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
+        
+        # Send feedback card after a short delay
+        try:
+            await asyncio.sleep(1)  # Short delay before feedback card
+            feedback_card = create_feedback_card()
+            feedback_activity_id = await adapter.send_card(service_url, conv_id, feedback_card)
+            
+            if feedback_activity_id:
+                feedback_cards[conv_id] = feedback_activity_id
+                logger.info(f"Sent feedback card to user {user_id} after conversation end with activity ID {feedback_activity_id}")
+            else:
+                logger.warning(f"Failed to send feedback card to user {user_id}")
+                
+        except Exception as e:
+            logger.error(f"Error sending feedback card after conversation end: {e}")
+        
+        # End the session
+        _clear_user_session(user_id)
+        
+        return TeamsActivityResponse(text="")
+        
     contact_service = get_contact_service()
     contact_id = contact_service.extract_contact_id_from_message(user_message)
     
@@ -748,12 +633,19 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         # Save user message first
         user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
         
-        # Query the contact database
+        # Send typing indicator before processing (only if not already sent)
+        if not typing_sent:
+            try:
+                await adapter.send_typing(service_url, conv_id)
+            except Exception as e:
+                logger.warning(f"Failed to send typing indicator: {e}")
+        
+        # Check if the contact has hardship validation data
         contact = await contact_service.get_contact_by_id(contact_id)
         contact_response = contact_service.format_contact_response(contact)
         
         # Store bot message and get its database ID
-        bot_msg_id = await _persist_bot_msg(user_msg_id, contact_response, "contact_query")
+        bot_msg_id = await _persist_bot_msg(user_msg_id, contact_response, "validation")
         
         # Send message and get Teams activity ID
         activity_id = await adapter.send_message(service_url, conv_id, contact_response)
@@ -761,230 +653,61 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         # Track the mapping
         if bot_msg_id and activity_id:
             feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-            logger.debug(f"Tracked contact mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
+            logger.debug(f"Tracked hardship validation mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
+        
+        # Schedule feedback after 10 minutes of inactivity
+        logger.info(f"⏰ Scheduling feedback timeout for user {user_id} in conversation {conv_id} - will trigger after 10 minutes of inactivity")
+        
+        # Define callback to track feedback cards in the router
+        def track_feedback_card(conv_id: str, activity_id: str):
+            feedback_cards[conv_id] = activity_id
+            logger.info(f"📋 Tracked timeout feedback card: conversation {conv_id} -> activity {activity_id}")
+        
+        feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, on_card_sent=track_feedback_card)
         
         return TeamsActivityResponse(text="")
     
-
-    
-    # Handle redirected scenarios (off-topic questions)
-    if analysis.flow_type.value == "continue_redirected":
-        # Send redirect message but continue conversation
-        redirect_message = classification_service.get_response_message(analysis)
-        if redirect_message:
-            user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
-            
-            # Store bot message and get its database ID
-            bot_msg_id = await _persist_bot_msg(user_msg_id, redirect_message, "off_topic")
-            
-            # Send message and get Teams activity ID
-            activity_id = await adapter.send_message(service_url, conv_id, redirect_message)
-            
-            # Track the mapping
-            if bot_msg_id and activity_id:
-                feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-                logger.debug(f"Tracked redirect mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-            
-            return TeamsActivityResponse(text="")
+    # If no contact ID found, provide helpful guidance
+    elif user_message.strip():
+        logger.info(f"No contact ID found in message: '{user_message}'")
         
-    if classification_service.should_schedule_delayed_feedback(analysis):
-        if not feedback_service.has_received_feedback(user_id):
-            delay_minutes = classification_service.get_feedback_delay_minutes(analysis)
-            # Pass a callback to update feedback_cards[conv_id] when the card is sent
-            def on_card_sent(conv_id, activity_id):
-                if activity_id:
-                    feedback_cards[conv_id] = activity_id
-            feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, delay_minutes=delay_minutes, on_card_sent=on_card_sent)
-            logger.info(f"Scheduled delayed feedback for user {user_id} in {delay_minutes} minutes")
-
-    user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
-    
-    logger.info(f"[Teams] Generating response for %s", user_id)
-
-    # Enhanced streaming logic following Microsoft Teams requirements
-    if state.get("use_streaming", True) and len(user_message.strip()) >= 2:
-        logger.info(f"Starting real-time LLM streaming for query: {user_message[:50]}...")
+        # Save user message
+        user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
         
-        try:
-            # Stream directly from LLM - much faster!
-            async def llm_stream_generator():
-                """Generator that streams directly from LLM and formats bullet points."""
-                full_response = ""
-                async for chunk in chat_processor.process_message_streaming(
-                    user_message,
-                    chat_history=None,
-                    user_id=user_id
-                ):
-                    full_response += chunk
-                    # Format and yield chunks with proper bullet point formatting
-                    yield chunk
-                
-                # Store the complete response for memory after streaming
-                if full_response.strip():
-                    # Format the complete response for memory
-                    formatted_response = chat_processor._format_bullet_points(full_response)
-                    
-                    # Update last bot response time
-                    state["last_bot_response_time"] = datetime.utcnow()
-                    
-                    # Check if response contains "anything else?" 
-                    if _HAS_ANYTHING_ELSE_RE.search(formatted_response):
-                        state["awaiting_more_help"] = True
-                    
-                    # Store in database with appropriate intent
-                    intent = classification_service.get_message_intent(analysis)
-                    bot_msg_id = await _persist_bot_msg(user_msg_id, formatted_response, intent)
-                    
-                    # Track the mapping - for streaming, we'll need to get the activity ID
-                    # This will be handled after streaming completes
-                    if bot_msg_id:
-                        # Store the bot message ID temporarily to map later
-                        state["last_bot_message_id"] = bot_msg_id
-
-            # Start real-time streaming from LLM
-            success, activity_id = await adapter.stream_message(
-                service_url, conv_id,
-                text_generator=llm_stream_generator(),
-                informative="I'm analyzing your request..."
-            )
-            
-            # Track the mapping between Teams activity ID and bot message database ID
-            if success and activity_id:
-                # Get the bot message ID that was stored during streaming
-                bot_msg_id = state.get("last_bot_message_id")
-                if bot_msg_id:
-                    feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-                    logger.debug(f"Tracked streaming mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-                    # Clean up the temporary storage
-                    state.pop("last_bot_message_id", None)
-                else:
-                    logger.warning(f"Streaming completed but no bot message ID found for activity {activity_id}")
-            elif success:
-                logger.debug("Streaming completed successfully but no activity ID returned")
-            else:
-                logger.warning("Streaming failed, falling back to traditional method")
-                # Fallback to traditional method
-                result = await chat_processor.process_message(
-                    user_message,
-                    chat_history=None,
-                    user_id=user_id,
-                    system_override=system_override
-                )
-                if result.is_success():
-                    answer = result.unwrap()["response"].strip()
-                    
-                    # Check if the response already contains "anything else?" question
-                    has_anything_else = _HAS_ANYTHING_ELSE_RE.search(answer)
-                    if has_anything_else:
-                        # Set state to await response
-                        state["awaiting_more_help"] = True
-                    
-                    # Store bot message and get its database ID
-                    intent = classification_service.get_message_intent(analysis)
-                    bot_msg_id = await _persist_bot_msg(user_msg_id, answer, intent)
-                    
-                    # Send message and get Teams activity ID
-                    activity_id = await adapter.send_message(service_url, conv_id, answer)
-                    
-                    # Track the mapping for feedback
-                    if bot_msg_id and activity_id:
-                        feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-                        logger.debug(f"Tracked streaming fallback mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-                else:
-                    # Fallback message
-                    await adapter.send_message(
-                        service_url, conv_id,
-                        "Sorry, I hit a glitch. Please try again later."
-                    )
-                
-        except Exception as e:
-            logger.error(f"Streaming error: {e}, falling back to regular processing")
-            # Fallback to traditional method
-            result = await chat_processor.process_message(
-                user_message,
-                chat_history=None,
-                user_id=user_id,
-                system_override=system_override
-            )
-            if result.is_success():
-                answer = result.unwrap()["response"].strip()
-                
-                # Check if the response already contains "anything else?" question
-                has_anything_else = _HAS_ANYTHING_ELSE_RE.search(answer)
-                if has_anything_else:
-                    # Set state to await response
-                    state["awaiting_more_help"] = True
-
-                # Store bot message and get its database ID
-                intent = classification_service.get_message_intent(analysis)
-                bot_msg_id = await _persist_bot_msg(user_msg_id, answer, intent)
-                
-                logger.info(f"Sending regular message (length: {len(answer)})")
-                # Send message and get Teams activity ID
-                activity_id = await adapter.send_message(service_url, conv_id, answer)
-                
-                # Track the mapping
-                if bot_msg_id and activity_id:
-                    feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-                    logger.debug(f"Tracked fallback mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-            else:
-                # Fallback message
-                await adapter.send_message(
-                    service_url, conv_id,
-                    "Sorry, I hit a glitch. Please try again later."
-                )
-                
-        return TeamsActivityResponse(text="")
-    else:
-        # Use traditional method for very short queries or when streaming is disabled
-        logger.info(f"Using traditional processing for short query")
-        
-        # Show analyzing message for non-streaming responses
-        if len(user_message.split()) > 1:
+        # Send typing indicator before processing (only if not already sent)
+        if not typing_sent:
             try:
-                await adapter.send_informative_update(
-                    service_url, conv_id,
-                    "I'm analyzing your request...",
-                    stream_sequence=1
-                )
+                await adapter.send_typing(service_url, conv_id)
             except Exception as e:
-                logger.warning(f"Failed to send analyzing message: {e}")
+                logger.warning(f"Failed to send typing indicator: {e}")
         
-        result = await chat_processor.process_message(
-            user_message,
-            chat_history=None,
-            user_id=user_id,
-            system_override=system_override
+        # Provide helpful response
+        help_message = (
+            "I'm here to help you validate hardship data.\n "
+            "Please provide a contact ID to validate the hardship data.\n\n"
         )
         
-        if result.is_success():
-            answer = result.unwrap()["response"].strip()
-            
-            # Check if the response already contains "anything else?" question
-            has_anything_else = _HAS_ANYTHING_ELSE_RE.search(answer)
-            if has_anything_else:
-                # Set state to await response
-                state["awaiting_more_help"] = True
-
-            # Store bot message and get its database ID
-            intent = classification_service.get_message_intent(analysis)
-            bot_msg_id = await _persist_bot_msg(user_msg_id, answer, intent)
-            
-            logger.info(f"Sending regular message (length: {len(answer)})")
-            # Send message and get Teams activity ID
-            activity_id = await adapter.send_message(service_url, conv_id, answer)
-            
-            # Track the mapping
-            if bot_msg_id and activity_id:
-                feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-                logger.debug(f"Tracked non-streaming mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
-        else:
-            # Fallback message
-            await adapter.send_message(
-                service_url, conv_id,
-                "Sorry, I hit a glitch. Please try again later."
-            )
+        # Store bot message and get its database ID
+        bot_msg_id = await _persist_bot_msg(user_msg_id, help_message, "help")
         
+        # Send message and get Teams activity ID
+        activity_id = await adapter.send_message(service_url, conv_id, help_message)
+        
+        # Track the mapping
+        if bot_msg_id and activity_id:
+            feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
+            logger.debug(f"Tracked help mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
+        
+        # Schedule feedback after 10 minutes of inactivity
+        logger.info(f"⏰ Scheduling feedback timeout for user {user_id} in conversation {conv_id} - will trigger after 10 minutes of inactivity")
+        
+        # Define callback to track feedback cards in the router
+        def track_feedback_card(conv_id: str, activity_id: str):
+            feedback_cards[conv_id] = activity_id
+            logger.info(f"📋 Tracked timeout feedback card: conversation {conv_id} -> activity {activity_id}")
+        
+        feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, on_card_sent=track_feedback_card)
+    
     return TeamsActivityResponse(text="")
 
 
@@ -996,34 +719,17 @@ class DebugChatRequest(BaseModel):
 class DebugChatResponse(BaseModel):
     user_message: str
     bot_response: str
-    conversation_flow: str
-    confidence: float
     processing_time: float
 
 @router.post("/debug", response_model=DebugChatResponse)
 async def debug_chat(req: DebugChatRequest):
-    """Debug endpoint that returns actual AI response for testing."""
+    """Debug endpoint that returns hardship validation check response for testing."""
     import time
     start_time = time.time()
     
     try:
         # Create a session ID for this debug conversation
         session_id = session_tracker.get(req.user_id)
-        
-        # Get conversation context
-        # memory = await get_or_create_memory(req.user_id)
-        # conversation_context = None
-        # if memory.messages:
-        #     recent_messages = memory.messages[-4:]
-        #     conversation_context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_messages])
-        
-        # Analyze conversation flow
-        classification_service = get_content_classification_service()
-        analysis = await classification_service.analyze_conversation_flow(
-            user_message=req.text,
-            conversation_context=None,
-            response_type="standard"
-        )
         
         # Save user message to database
         user_msg_id = await message_service.add_message(
@@ -1038,21 +744,16 @@ async def debug_chat(req: DebugChatRequest):
             reply_to_id=None,
         )
         
-        # Get AI response
-        result = await chat_processor.process_message(
-            req.text,
-            chat_history=None,
-            user_id=req.user_id
-        )
+        # Check if message contains contact ID
+        contact_service = get_contact_service()
+        contact_id = contact_service.extract_contact_id_from_message(req.text)
         
         processing_time = time.time() - start_time
         
-        if result.is_success():
-            bot_response = result.unwrap()["response"].strip()
-            
-            # Save to memory for context
-            # memory.add_user_message(req.text)
-            # memory.add_ai_message(bot_response)
+        if contact_id:
+            # Check hardship validation data
+            result = await contact_service.get_contact_by_id(contact_id)
+            bot_response = contact_service.format_contact_response(result)
             
             # Save bot response to database
             await message_service.add_message(
@@ -1063,23 +764,17 @@ async def debug_chat(req: DebugChatRequest):
                 session_id=session_id,
                 role="bot",
                 text=bot_response,
-                intent=classification_service.get_message_intent(analysis),
+                intent="validation",
                 reply_to_id=user_msg_id,
             )
-            
-            return DebugChatResponse(
-                user_message=req.text,
-                bot_response=bot_response,
-                conversation_flow=analysis.flow_type.value,
-                confidence=analysis.confidence,
-                processing_time=round(processing_time, 2)
-            )
         else:
-            # Even on error, save to memory and database
-            error_response = "Sorry, I encountered an error processing your request."
-            # memory.add_user_message(req.text)
-            # memory.add_ai_message(error_response)
+            # No contact ID found
+            bot_response = (
+                "I'm here to help you validate hardshipdata. "
+                "Please provide a contact ID to validate the hardship data.\n\n"
+            )
             
+            # Save bot response to database
             await message_service.add_message(
                 bot_name=get_bot_name(),
                 env="development",
@@ -1087,18 +782,16 @@ async def debug_chat(req: DebugChatRequest):
                 user_id=req.user_id,
                 session_id=session_id,
                 role="bot",
-                text=error_response,
-                intent="error",
+                text=bot_response,
+                intent="help",
                 reply_to_id=user_msg_id,
             )
-            
-            return DebugChatResponse(
-                user_message=req.text,
-                bot_response=error_response,
-                conversation_flow="error",
-                confidence=0.0,
-                processing_time=round(processing_time, 2)
-            )
+        
+        return DebugChatResponse(
+            user_message=req.text,
+            bot_response=bot_response,
+            processing_time=round(processing_time, 2)
+        )
             
     except Exception as e:
         logger.error(f"Debug chat error: {e}")
@@ -1106,8 +799,6 @@ async def debug_chat(req: DebugChatRequest):
         return DebugChatResponse(
             user_message=req.text,
             bot_response=f"Error: {str(e)}",
-            conversation_flow="error",
-            confidence=0.0,
             processing_time=round(processing_time, 2)
         )
 
@@ -1119,7 +810,6 @@ def _clear_user_session(user_id: str):
     """
     
     # Clear in-memory conversation data
-    mem = user_memories.pop(user_id, None)
     old_state = user_states.pop(user_id, None)  # This is the key - removes session_id 
     first_time_users.discard(user_id)  # They're no longer "first time" but can get greeting cards in new sessions
     
@@ -1130,10 +820,8 @@ def _clear_user_session(user_id: str):
     feedback_service.clear_user_session(user_id)
     
     # Log detailed session cleanup for debugging
-    message_count = 0  # Memory system is disabled in uwbot
     had_greeting = old_state.get("greeting_shown", False) if old_state else False
     logger.info(f"🧹 CLEARED session for user {user_id}:")
-    logger.info(f"   • {message_count} messages in memory")
     logger.info(f"   • greeting_shown was: {had_greeting}")
     logger.info(f"   • Next greeting will trigger NEW SESSION and greeting card")
     logger.info(f"   • Removed from first_time_users: {user_id in first_time_users}")

@@ -4,48 +4,6 @@ Adaptive card templates for Teams messages.
 
 from uwbot.infrastructure.cards_brand import BRAND, brand_header
 
-def _brand_header(title: str):
-    """Return a ColumnSet header with logo and title using brand colours."""
-    logo_url = "https://raw.githubusercontent.com/your-org/assets/main/logo.png"  # replace with CDN path
-    accent = "#003C71"
-    return {
-        "type": "ColumnSet",
-        "columns": [
-            {
-                "type": "Column",
-                "width": "auto",
-                "items": [{
-                    "type": "Image",
-                    "url": logo_url,
-                    "size": "Small",
-                    "style": "Person"
-                }]
-            },
-            {
-                "type": "Column",
-                "width": "stretch",
-                "verticalContentAlignment": "Center",
-                "items": [{
-                    "type": "TextBlock",
-                    "text": title,
-                    "weight": "Bolder",
-                    "size": "Medium",
-                    "color": "Accent",
-                    "wrap": True
-                }]
-            }
-        ],
-        "spacing": "None",
-        "separator": True,
-        "style": "emphasis",
-        "backgroundImage": {
-            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4XmP8z8BQDwAFgwJ/lAxAbwAAAABJRU5ErkJggg==",
-            "fillMode": "Cover",
-            "horizontalAlignment": "Left",
-            "verticalAlignment": "Center"
-        }
-    }
-
 def _list_item(emoji: str, text: str) -> dict:
     return {
         "type": "ColumnSet",
@@ -56,7 +14,6 @@ def _list_item(emoji: str, text: str) -> dict:
         ]
     }
 
-# def create_welcome_card(user_name: str = "there") -> dict:
 def create_welcome_card(user_name: str = "there") -> dict:
     """Elegant, theme-aware welcome card with simplified greeting."""
     header = f"Hi {user_name}"
@@ -71,8 +28,7 @@ def create_welcome_card(user_name: str = "there") -> dict:
             {
                 "type": "TextBlock",
                 "text": (
-                    "I'm your HR Assistant  👋. I'm here to help you with any "
-                    "HR-related questions or requests you may have."
+                    "I'm your Validation Assistant 👋. I can help you check if contacts have hardship validation data and analyze their financial hardship claims."
                 ),
                 "wrap": True,
                 "spacing": "Medium",
@@ -136,7 +92,7 @@ def create_feedback_card(selected_rating: int = 0, *, interactive: bool = True, 
             brand_header("We value your feedback"),
             {
                 "type": "TextBlock",
-                "text": "How would you rate your experience with our HR Assistant?",
+                "text": "How would you rate your experience with our Validation Assistant?",
                 "wrap": True
             },
             {
