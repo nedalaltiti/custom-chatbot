@@ -227,16 +227,7 @@ Please provide your analysis in the exact JSON format specified above.
         else:
             response_parts.append(f"❌ Contact {contact_id} hardship validation failed \n")
         
-        # Hardship information section
-        hardship_info = []
-        if hardship_description:
-            hardship_info.append(f"\n • Hardship Description: {hardship_description}")
-        if financial_hardship:
-            hardship_info.append(f"\n • Financial Hardship Status: {financial_hardship}")
-        
-        if hardship_info:
-            response_parts.append("**Hardship Information:** \n")
-            response_parts.extend(hardship_info)
+        # Hardship information section - removed details, only show reason
         
         # Analysis results section
         response_parts.append("")
