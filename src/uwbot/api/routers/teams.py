@@ -531,7 +531,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     if should_show_greeting:
         logger.info(f"Showing welcome card to user {user_id} - {greeting_reason}")
         
-        # Create hardship validation specific welcome card
+        # Create combined validation welcome card
         welcome_card = {
             "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
             "type": "AdaptiveCard",
@@ -546,7 +546,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 },
                 {
                     "type": "TextBlock",
-                    "text": "I'm your **Validation Assistant**. I can help you validate data and analyze their financial hardship claims.",
+                    "text": "I'm your **Validation Assistant**. I can help you validate both hardship and budget data for contacts.",
                     "wrap": True,
                     "spacing": "Medium",
                 },
@@ -651,12 +651,15 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             except Exception as e:
                 logger.warning(f"Failed to send typing indicator: {e}")
         
-        # Check if the contact has hardship validation data
-        contact = await contact_service.get_contact_by_id(contact_id)
-        contact_response = contact_service.format_contact_response(contact)
+        # Always perform combined validation by default
+        # Check both hardship and budget validation data
+        contact = await contact_service.get_contact_combined_validation(contact_id)
+        contact_response = contact.get('formatted_response', 'No response available')
+        intent_type = "combined_validation"
+        logger.info(f"Performing combined validation for contact {contact_id}")
         
         # Store bot message and get its database ID
-        bot_msg_id = await _persist_bot_msg(user_msg_id, contact_response, "validation")
+        bot_msg_id = await _persist_bot_msg(user_msg_id, contact_response, intent_type)
         
         # Send message and get Teams activity ID
         activity_id = await adapter.send_message(service_url, conv_id, contact_response)
@@ -664,7 +667,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         # Track the mapping
         if bot_msg_id and activity_id:
             feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
-            logger.debug(f"Tracked hardship validation mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
+            logger.debug(f"Tracked {intent_type} mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
         
         # Schedule feedback after 10 minutes of inactivity
         logger.info(f"⏰ Scheduling feedback timeout for user {user_id} in conversation {conv_id} - will trigger after 10 minutes of inactivity")
@@ -692,10 +695,15 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             except Exception as e:
                 logger.warning(f"Failed to send typing indicator: {e}")
         
-        # Provide helpful response
+        # Provide helpful response for combined validation
         help_message = (
-            "I'm here to help you validate hardship data.\n "
-            "Please provide a contact ID to validate the hardship data.\n\n"
+            "I'm here to help you validate both hardship and budget data.\n "
+            "Please provide a contact ID to check both hardship and budget validation.\n\n"
+            "Examples:\n"
+            "• Contact 123\n"
+            "• Check validation for contact 456\n"
+            "• Validate contact 789\n"
+            "• Full analysis for contact 101"
         )
         
         # Store bot message and get its database ID
@@ -781,8 +789,8 @@ async def debug_chat(req: DebugChatRequest):
         else:
             # No contact ID found
             bot_response = (
-                "I'm here to help you validate hardshipdata. "
-                "Please provide a contact ID to validate the hardship data.\n\n"
+                "I'm here to help you validate both hardship and budget data. "
+                "Please provide a contact ID to validate the contact data.\n\n"
             )
             
             # Save bot response to database
