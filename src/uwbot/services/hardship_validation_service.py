@@ -11,6 +11,7 @@ from enum import Enum
 
 from uwbot.services.gemini_service import GeminiService
 from uwbot.utils.result import Result, Success, Error
+from uwbot.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +33,15 @@ class HardshipAnalysis:
 class HardshipValidationService:
     """Service for validating financial hardship claims using AI analysis."""
     
-    # Custom field IDs for hardship-related data
-    FINANCIAL_HARDSHIP_ID = 322256
-    HARDSHIP_DESCRIPTION_ID = 322271
-    
     def __init__(self, llm_service: Optional[GeminiService] = None):
         """Initialize the hardship validation service."""
         self.llm_service = llm_service or GeminiService()
-        logger.info("HardshipValidationService initialized")
+        
+        # Get field IDs from settings
+        self.financial_hardship_id = settings.hardship_fields.financial_hardship_id
+        self.hardship_description_id = settings.hardship_fields.hardship_description_id
+        
+        logger.info(f"HardshipValidationService initialized with field IDs: financial={self.financial_hardship_id}, description={self.hardship_description_id}")
     
     async def analyze_hardship_validity(
         self, 
@@ -120,13 +122,6 @@ Please analyze the hardship claim and provide a structured response in the follo
 RESULT GUIDELINES:
 - **pass**: The hardship description makes sense as a financial hardship (single words like "bankruptcy", "covid 19" are acceptable)
 - **no_pass**: The description does not relate to financial hardship or is clearly inappropriate (e.g., "vacation", "luxury purchase")
-
-CONFIDENCE SCALE:
-- 0.9-1.0: Very high confidence - clear financial hardship (e.g., "bankruptcy", "job loss")
-- 0.7-0.89: High confidence - reasonable hardship with minor uncertainties
-- 0.5-0.69: Moderate confidence - some uncertainty about hardship relevance
-- 0.3-0.49: Low confidence - unclear if it's a financial hardship
-- 0.0-0.29: Very low confidence - likely not a financial hardship
 
 ANALYSIS FOCUS:
 - Focus on whether the hardship description indicates genuine financial difficulty
@@ -227,7 +222,16 @@ Please provide your analysis in the exact JSON format specified above.
         else:
             response_parts.append(f"❌ Contact {contact_id} hardship validation failed \n")
         
-        # Hardship information section - removed details, only show reason
+        # Hardship information section
+        hardship_info = []
+        if hardship_description:
+            hardship_info.append(f"\n • Hardship Description: {hardship_description}")
+        if financial_hardship:
+            hardship_info.append(f"\n • Financial Hardship Status: {financial_hardship}")
+        
+        if hardship_info:
+            response_parts.append("**Hardship Information:** \n")
+            response_parts.extend(hardship_info)
         
         # Analysis results section
         response_parts.append("")

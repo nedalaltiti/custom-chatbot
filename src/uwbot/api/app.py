@@ -42,6 +42,38 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     
     logger.info("UWBot starting up…")
 
+    # Validate hardship field configuration
+    try:
+        hardship_fields = settings.hardship_fields
+        logger.info(f"Validating hardship field configuration...")
+        logger.info(f"  Financial hardship ID: {hardship_fields.financial_hardship_id}")
+        logger.info(f"  Hardship description ID: {hardship_fields.hardship_description_id}")
+        
+        if not hardship_fields.validate():
+            raise ValueError("Invalid hardship field configuration detected during startup")
+        
+        logger.info("✅ Hardship field configuration validated successfully")
+    except Exception as e:
+        logger.error(f"Hardship field validation failed: {e}")
+        raise
+
+    # Validate budget field configuration
+    try:
+        budget_fields = settings.budget_fields
+        logger.info(f"Validating budget field configuration...")
+        logger.info(f"  Budget acctid: {budget_fields.acctid}")
+        logger.info(f"  Budget c_type: {budget_fields.c_type}")
+        logger.info(f"  Budget iscoapp: {budget_fields.iscoapp}")
+        logger.info(f"  Budget leadstatus: {budget_fields.leadstatus}")
+        
+        if not budget_fields.validate():
+            raise ValueError("Invalid budget field configuration detected during startup")
+        
+        logger.info("✅ Budget field configuration validated successfully")
+    except Exception as e:
+        logger.error(f"Budget field validation failed: {e}")
+        raise
+
     # Initialize database connections first
     try:
         from uwbot.db.session import init_database

@@ -3,6 +3,7 @@ from typing import Optional
 
 from uwbot.services.gemini_service import GeminiService
 from uwbot.services.contact_service import ContactService
+from uwbot.services.hardship_validation_service import HardshipValidationService
 
 """
 Dependency-provider helpers for FastAPI.
@@ -20,6 +21,12 @@ def get_llm() -> GeminiService:
 
 
 @lru_cache
+def get_hardship_service() -> HardshipValidationService:
+    """Return a shared HardshipValidationService instance."""
+    return HardshipValidationService()
+
+
+@lru_cache
 def get_contact_service() -> ContactService:
     """
     Return a shared ContactService for contact database operations.
@@ -31,4 +38,5 @@ def get_contact_service() -> ContactService:
     - Extracting contact IDs from user messages
     - Validation analysis
     """
-    return ContactService()
+    hardship_service = get_hardship_service()
+    return ContactService(hardship_service)
