@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, BigInteger, Integer, SmallInteger, String,
-    Text, TIMESTAMP, ForeignKey, MetaData, Float
+    Text, TIMESTAMP, ForeignKey, MetaData, Boolean, Float
 )
 from sqlalchemy.orm import registry, relationship
 
@@ -74,7 +74,7 @@ class Contact:
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     acctid = Column(String(255), nullable=True)
-    del_ = Column(String(1), nullable=True)  # Using del_ to avoid Python keyword conflict
+    del_ = Column("del", Boolean, nullable=True)  # Using del_ to avoid Python keyword conflict, maps to "del" column - boolean for soft delete
     iscoapp = Column(String(1), nullable=True)
     c_type = Column(String(50), nullable=True)
     leadstatus = Column(String(50), nullable=True)
@@ -114,3 +114,4 @@ class BudgetFields:
     field_type = Column(String(1), nullable=False)  # 'I' for Income, 'E' for Expense
     field_name = Column(String(255), nullable=True)
     field_description = Column(Text, nullable=True)
+

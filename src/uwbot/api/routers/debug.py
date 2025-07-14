@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import Optional
 import time
 import logging
@@ -28,6 +28,12 @@ class DebugChatResponse(BaseModel):
 class ContactQueryRequest(BaseModel):
     contact_id: int
     user_id: str = "debug-user"
+    
+    @validator('contact_id')
+    def validate_contact_id(cls, v):
+        if v < 1 or v > 999999999:
+            raise ValueError('Invalid contact ID range. Contact ID must be between 1 and 999,999,999.')
+        return v
 
 class ContactQueryResponse(BaseModel):
     contact_id: int
@@ -35,63 +41,6 @@ class ContactQueryResponse(BaseModel):
     response: str
     success: bool
     processing_time: float
-
-class BudgetQueryRequest(BaseModel):
-    contact_id: int
-    user_id: str = "debug-user"
-
-class BudgetQueryResponse(BaseModel):
-    contact_id: int
-    budget_info: Optional[dict] = None
-    response: str
-    success: bool
-    processing_time: float
-
-class CombinedQueryRequest(BaseModel):
-    contact_id: int
-    user_id: str = "debug-user"
-
-class CombinedQueryResponse(BaseModel):
-    contact_id: int
-    hardship_info: Optional[dict] = None
-    budget_info: Optional[dict] = None
-    combined_result: str
-    response: str
-    success: bool
-    processing_time: float
-
-@router.post("/budget", response_model=BudgetQueryResponse)
-async def debug_budget_query(req: BudgetQueryRequest):
-    """Debug endpoint for testing budget validation data check."""
-    start_time = time.time()
-    
-    try:
-        contact_service = get_contact_service()
-        
-        # Check budget validation data
-        budget_result = await contact_service.get_contact_budget_analysis(req.contact_id)
-        budget_response = contact_service.format_budget_response(budget_result) if budget_result else "No budget data found"
-        
-        processing_time = time.time() - start_time
-        
-        return BudgetQueryResponse(
-            contact_id=req.contact_id,
-            budget_info=budget_result,
-            response=budget_response,
-            success=budget_result is not None,
-            processing_time=round(processing_time, 2)
-        )
-        
-    except Exception as e:
-        logger.error(f"Budget validation check error: {e}")
-        processing_time = time.time() - start_time
-        return BudgetQueryResponse(
-            contact_id=req.contact_id,
-            budget_info=None,
-            response=f"Error: {str(e)}",
-            success=False,
-            processing_time=round(processing_time, 2)
-        )
 
 @router.post("/contact", response_model=ContactQueryResponse)
 async def debug_contact_query(req: ContactQueryRequest):
@@ -121,54 +70,6 @@ async def debug_contact_query(req: ContactQueryRequest):
         return ContactQueryResponse(
             contact_id=req.contact_id,
             contact_info=None,
-            response=f"Error: {str(e)}",
-            success=False,
-            processing_time=round(processing_time, 2)
-        )
-
-@router.post("/combined", response_model=CombinedQueryResponse)
-async def debug_combined_query(req: CombinedQueryRequest):
-    """Debug endpoint for testing combined hardship and budget validation."""
-    start_time = time.time()
-    
-    try:
-        contact_service = get_contact_service()
-        
-        # Check combined validation data
-        combined_result = await contact_service.get_contact_combined_validation(req.contact_id)
-        
-        if combined_result:
-            processing_time = time.time() - start_time
-            
-            return CombinedQueryResponse(
-                contact_id=req.contact_id,
-                hardship_info=combined_result.get('hardship_analysis'),
-                budget_info=combined_result.get('budget_analysis'),
-                combined_result=combined_result.get('combined_result', 'error'),
-                response=combined_result.get('formatted_response', 'No response available'),
-                success=True,
-                processing_time=round(processing_time, 2)
-            )
-        else:
-            processing_time = time.time() - start_time
-            return CombinedQueryResponse(
-                contact_id=req.contact_id,
-                hardship_info=None,
-                budget_info=None,
-                combined_result="no_data",
-                response="No validation data found for this contact",
-                success=False,
-                processing_time=round(processing_time, 2)
-            )
-        
-    except Exception as e:
-        logger.error(f"Combined validation check error: {e}")
-        processing_time = time.time() - start_time
-        return CombinedQueryResponse(
-            contact_id=req.contact_id,
-            hardship_info=None,
-            budget_info=None,
-            combined_result="error",
             response=f"Error: {str(e)}",
             success=False,
             processing_time=round(processing_time, 2)
