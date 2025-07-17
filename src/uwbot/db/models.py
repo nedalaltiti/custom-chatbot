@@ -114,4 +114,3 @@ class BudgetFields:
     field_type = Column(String(1), nullable=False)  # 'I' for Income, 'E' for Expense
     field_name = Column(String(255), nullable=True)
     field_description = Column(Text, nullable=True)
-

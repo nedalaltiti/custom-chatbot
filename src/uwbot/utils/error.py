@@ -36,19 +36,6 @@ class ErrorCode(Enum):
     TOKEN_EXPIRED = 2002
     INVALID_CREDENTIALS = 2003
     
-    # Storage errors (3000-3999)
-    STORAGE_UNAVAILABLE = 3000
-    FILE_NOT_FOUND = 3001
-    PERMISSION_DENIED = 3002
-    STORAGE_FULL = 3003
-    FILE_CORRUPTED = 3004
-    
-    # Vector store errors (4000-4999)
-    EMBEDDING_FAILED = 4000
-    SIMILARITY_SEARCH_FAILED = 4001
-    INDEX_CORRUPTED = 4002
-    VECTOR_STORE_UNAVAILABLE = 4003
-    
     # LLM errors (5000-5999)
     LLM_UNAVAILABLE = 5000
     PROMPT_TOO_LONG = 5001
@@ -56,22 +43,11 @@ class ErrorCode(Enum):
     CONTENT_FILTERED = 5003
     TOKEN_LIMIT_EXCEEDED = 5004
     
-    # Document processing errors (6000-6999)
-    DOCUMENT_PARSE_ERROR = 6000
-    UNSUPPORTED_FORMAT = 6001
-    EXTRACTION_FAILED = 6002
-    CHUNKING_ERROR = 6003
-    
     # Teams API errors (7000-7999)
     TEAMS_API_UNAVAILABLE = 7000
     MESSAGE_DELIVERY_FAILED = 7001
     CARD_RENDERING_FAILED = 7002
     
-    # RAG-specific errors (8000-8999)
-    NO_RELEVANT_CONTENT = 8000
-    CONTEXT_TOO_LARGE = 8001
-    QUERY_PROCESSING_ERROR = 8002
-
 
 class BaseError(Exception):
     """Base error class for all HR bot exceptions."""
@@ -169,51 +145,6 @@ class AuthError(BaseError):
             cause=cause,
         )
 
-
-class StorageError(BaseError):
-    """Storage-related errors."""
-    
-    def __init__(
-        self,
-        code: ErrorCode = ErrorCode.STORAGE_UNAVAILABLE,
-        message: str = "Storage operation failed",
-        user_message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        severity: ErrorSeverity = ErrorSeverity.ERROR,
-        cause: Optional[Exception] = None,
-    ):
-        super().__init__(
-            code=code,
-            message=message,
-            user_message=user_message or "Storage system error.",
-            details=details,
-            severity=severity,
-            cause=cause,
-        )
-
-
-class VectorStoreError(BaseError):
-    """Vector store specific errors."""
-    
-    def __init__(
-        self,
-        code: ErrorCode = ErrorCode.VECTOR_STORE_UNAVAILABLE,
-        message: str = "Vector store operation failed",
-        user_message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        severity: ErrorSeverity = ErrorSeverity.ERROR,
-        cause: Optional[Exception] = None,
-    ):
-        super().__init__(
-            code=code,
-            message=message,
-            user_message=user_message or "Knowledge retrieval system error.",
-            details=details,
-            severity=severity,
-            cause=cause,
-        )
-
-
 class LLMError(BaseError):
     """LLM-related errors."""
     
@@ -234,29 +165,6 @@ class LLMError(BaseError):
             severity=severity,
             cause=cause,
         )
-
-
-class DocumentError(BaseError):
-    """Document processing errors."""
-    
-    def __init__(
-        self,
-        code: ErrorCode = ErrorCode.DOCUMENT_PARSE_ERROR,
-        message: str = "Document processing failed",
-        user_message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        severity: ErrorSeverity = ErrorSeverity.ERROR,
-        cause: Optional[Exception] = None,
-    ):
-        super().__init__(
-            code=code,
-            message=message,
-            user_message=user_message or "Document processing error.",
-            details=details,
-            severity=severity,
-            cause=cause,
-        )
-
 
 class TeamsError(BaseError):
     """Microsoft Teams API errors."""
@@ -280,42 +188,5 @@ class TeamsError(BaseError):
         )
 
 
-class RAGError(BaseError):
-    """RAG-specific errors."""
-    
-    def __init__(
-        self,
-        code: ErrorCode = ErrorCode.QUERY_PROCESSING_ERROR,
-        message: str = "RAG operation failed",
-        user_message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        severity: ErrorSeverity = ErrorSeverity.ERROR,
-        cause: Optional[Exception] = None,
-    ):
-        super().__init__(
-            code=code, 
-            message=message,
-            user_message=user_message or "Knowledge retrieval system error.",
-            details=details,
-            severity=severity,
-            cause=cause,
-        )
 
-
-# Helper functions
-
-def get_user_friendly_message(error: Union[BaseError, Exception]) -> str:
-    """
-    Get a user-friendly error message for any error.
-    
-    Args:
-        error: Any exception
-        
-    Returns:
-        User-friendly error message
-    """
-    if isinstance(error, BaseError):
-        return error.user_message
-    
-    # Generic message for unknown errors
-    return "An unexpected error occurred. Please try again later." 
+# No get_user_friendly_message function present, so no changes needed. 

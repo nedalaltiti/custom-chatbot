@@ -11,7 +11,7 @@ This module provides:
 import logging
 import asyncio
 import os
-from typing import List, Dict
+from typing import List, Dict, Optional
 import time
 import random
 
@@ -81,12 +81,13 @@ class GeminiService:
             except Exception as e:
                 logger.warning(f"Failed to eagerly initialize Gemini: {e}")
 
-    async def analyze_messages(self, messages: List[str]) -> Result[Dict]:
+    async def analyze_messages(self, messages: List[str], response_format: Optional[str] = None) -> Result[Dict]:
         """
         Analyze a batch of chat messages (or questions) using Gemini with retry logic.
         
         Args:
             messages: List of message strings (last one is the current query)
+            response_format: Optional format specification (e.g., "json")
             
         Returns:
             Result containing the LLM's output or error
@@ -118,10 +119,17 @@ class GeminiService:
                 # Use Vertex AI - simply concatenate history + current message
                 prompt = "\n".join(history + [current_message]) if history else current_message
                 
+                # Prepare generation config (response_format is not supported in Vertex AI)
+                generation_config = self.generation_config.copy()
+                
+                # For Vertex AI, we need to include the response format in the prompt itself
+                if response_format and response_format.lower() == "json":
+                    prompt = f"{prompt}\n\nPlease provide your response in valid JSON format."
+                
                 response = await asyncio.to_thread(
                     model.generate_content,
                     prompt,
-                    generation_config=self.generation_config,
+                    generation_config=generation_config,
                     safety_settings=self.safety_settings,
                 )
                 response_text = response.text

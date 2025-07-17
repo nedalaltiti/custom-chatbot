@@ -23,6 +23,7 @@ from uwbot.utils.error import BaseError, ErrorSeverity
 from uwbot.services.session_tracker import SessionTracker   
 from uwbot.services.gemini_service import GeminiService
 from uwbot.config.app_config import get_app_config
+from uwbot.services.contact_service import InvalidContactIDError
 
 logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
@@ -179,3 +180,15 @@ async def uwbot_error_handler(_: Request, exc: BaseError) -> JSONResponse:
         else status.HTTP_500_INTERNAL_SERVER_ERROR
     )
     return JSONResponse(status_code=status_code, content=exc.to_dict())
+
+@app.exception_handler(InvalidContactIDError)
+async def invalid_contact_id_handler(_: Request, exc: InvalidContactIDError) -> JSONResponse:
+    """Handle invalid contact ID errors with HTTP 422 Unprocessable Entity."""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "Invalid Contact ID",
+            "message": str(exc),
+            "type": "validation_error"
+        }
+    )

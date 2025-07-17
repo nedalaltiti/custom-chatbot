@@ -1,4 +1,4 @@
-# hrbot/db/session.py
+# uwbot/db/session.py
 import ssl
 import logging
 import asyncio

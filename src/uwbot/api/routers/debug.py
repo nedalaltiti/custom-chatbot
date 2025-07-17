@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, Field
 from typing import Optional
 import time
 import logging
+from datetime import datetime
 from uwbot.services.message_service import MessageService
 from uwbot.services.session_tracker import session_tracker
-from uwbot.utils.di import get_contact_service
+from uwbot.utils.di import get_contact_validation_uc
 from uwbot.config.settings import settings
 from uwbot.config.app_config import get_app_config
+from uwbot.utils.timing import get_performance_report, performance_tracker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -26,14 +28,8 @@ class DebugChatResponse(BaseModel):
     bot_name: str
 
 class ContactQueryRequest(BaseModel):
-    contact_id: int
+    contact_id: int = Field(ge=1, le=999_999_999)
     user_id: str = "debug-user"
-    
-    @validator('contact_id')
-    def validate_contact_id(cls, v):
-        if v < 1 or v > 999999999:
-            raise ValueError('Invalid contact ID range. Contact ID must be between 1 and 999,999,999.')
-        return v
 
 class ContactQueryResponse(BaseModel):
     contact_id: int
@@ -43,40 +39,32 @@ class ContactQueryResponse(BaseModel):
     processing_time: float
 
 @router.post("/contact", response_model=ContactQueryResponse)
-async def debug_contact_query(req: ContactQueryRequest):
+async def debug_contact_query(
+    req: ContactQueryRequest,
+    contact_service = Depends(get_contact_validation_uc)
+):
     """Debug endpoint for testing hardship validation data check."""
     start_time = time.time()
     
-    try:
-        contact_service = get_contact_service()
-        
-        # Check hardship validation data
-        hardship_result = await contact_service.get_contact_by_id(req.contact_id)
-        hardship_response = contact_service.format_contact_response(hardship_result)
-        
-        processing_time = time.time() - start_time
-        
-        return ContactQueryResponse(
-            contact_id=req.contact_id,
-            contact_info=hardship_result,
-            response=hardship_response,
-            success=hardship_result is not None,
-            processing_time=round(processing_time, 2)
-        )
-        
-    except Exception as e:
-        logger.error(f"Hardship validation check error: {e}")
-        processing_time = time.time() - start_time
-        return ContactQueryResponse(
-            contact_id=req.contact_id,
-            contact_info=None,
-            response=f"Error: {str(e)}",
-            success=False,
-            processing_time=round(processing_time, 2)
-        )
+    # Check hardship validation data
+    hardship_result = await contact_service.analyze_contact_hardship(req.contact_id)
+    hardship_response = contact_service.format_contact_response(hardship_result)
+    
+    processing_time = time.time() - start_time
+    
+    return ContactQueryResponse(
+        contact_id=req.contact_id,
+        contact_info=hardship_result,
+        response=hardship_response,
+        success=hardship_result is not None,
+        processing_time=round(processing_time, 2)
+    )
 
 @router.post("/chat", response_model=DebugChatResponse)
-async def debug_chat(req: DebugChatRequest):
+async def debug_chat(
+    req: DebugChatRequest,
+    contact_service = Depends(get_contact_validation_uc)
+):
     """Debug endpoint that returns hardship validation check response for testing."""
     import time
     start_time = time.time()
@@ -110,14 +98,13 @@ async def debug_chat(req: DebugChatRequest):
         )
         
         # Check if message contains contact ID
-        contact_service = get_contact_service()
         contact_id = contact_service.extract_contact_id_from_message(req.text)
         
         processing_time = time.time() - start_time
         
         if contact_id:
             # Check hardship validation data
-            result = await contact_service.get_contact_by_id(contact_id)
+            result = await contact_service.analyze_contact_hardship(contact_id)
             bot_response = contact_service.format_contact_response(result)
             
             # Save bot response to database
@@ -134,14 +121,8 @@ async def debug_chat(req: DebugChatRequest):
             )
         else:
             # No contact ID found
-            bot_response = (
-                "I'm here to help you check hardship validation data. "
-                "Please provide a contact ID to check if hardship data exists.\n\n"
-                "Examples:\n"
-                "• Contact 123\n"
-                "• Check hardship for contact 456\n"
-                "• Validate hardship for contact 789"
-            )
+            from uwbot.utils.validation_responses import format_debug_help_message
+            bot_response = format_debug_help_message()
             
             # Save bot response to database
             await message_service.add_message(
@@ -173,4 +154,58 @@ async def debug_chat(req: DebugChatRequest):
             processing_time=round(processing_time, 2),
             app_instance=app_config.instance_id,
             bot_name=bot_name
-        ) 
+        )
+
+@router.get("/performance")
+async def get_performance_stats():
+    """Get performance statistics for all services."""
+    try:
+        overall_stats = get_performance_report()
+        return {
+            "status": "success",
+            "data": overall_stats,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting performance stats: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+@router.get("/performance/{service_name}")
+async def get_service_performance_stats(service_name: str):
+    """Get performance statistics for a specific service."""
+    try:
+        service_stats = get_performance_report(service_name)
+        return {
+            "status": "success",
+            "data": service_stats,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting performance stats for {service_name}: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+@router.post("/performance/clear")
+async def clear_performance_stats():
+    """Clear all performance statistics."""
+    try:
+        performance_tracker.clear_stats()
+        return {
+            "status": "success",
+            "message": "Performance statistics cleared",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error clearing performance stats: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        } 
