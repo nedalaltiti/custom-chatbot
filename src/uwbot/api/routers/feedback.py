@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 import logging
 from uwbot.services.feedback_service import FeedbackService
-from uwbot.services.feedback import save_feedback
 from uwbot.config.settings import settings
 from typing import Optional
 from uwbot.infrastructure.cards import create_feedback_card

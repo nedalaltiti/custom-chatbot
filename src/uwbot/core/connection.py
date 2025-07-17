@@ -9,7 +9,7 @@ from typing import Optional
 
 from uwbot.config.settings import settings
 
-logger = logging.getLogger("hrbot.config")
+logger = logging.getLogger("uwbot.config")
 
 
 def get_db_connection():

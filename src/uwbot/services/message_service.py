@@ -1,4 +1,4 @@
-# hrbot/services/message_service.py
+# uwbot/services/message_service.py
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any

@@ -1,4 +1,4 @@
-# src/hrbot/utils/message.py
+# src/uwbot/utils/message.py
 """
 Light-weight text helpers that are pure Python / regex based.
 """
