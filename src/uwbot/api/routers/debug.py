@@ -9,7 +9,6 @@ from uwbot.services.session_tracker import session_tracker
 from uwbot.utils.di import get_contact_validation_uc
 from uwbot.config.settings import settings
 from uwbot.config.app_config import get_app_config
-from uwbot.utils.timing import get_performance_report, performance_tracker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -156,56 +155,4 @@ async def debug_chat(
             bot_name=bot_name
         )
 
-@router.get("/performance")
-async def get_performance_stats():
-    """Get performance statistics for all services."""
-    try:
-        overall_stats = get_performance_report()
-        return {
-            "status": "success",
-            "data": overall_stats,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error getting performance stats: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-@router.get("/performance/{service_name}")
-async def get_service_performance_stats(service_name: str):
-    """Get performance statistics for a specific service."""
-    try:
-        service_stats = get_performance_report(service_name)
-        return {
-            "status": "success",
-            "data": service_stats,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error getting performance stats for {service_name}: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }
-
-@router.post("/performance/clear")
-async def clear_performance_stats():
-    """Clear all performance statistics."""
-    try:
-        performance_tracker.clear_stats()
-        return {
-            "status": "success",
-            "message": "Performance statistics cleared",
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error clearing performance stats: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        } 
+ 
