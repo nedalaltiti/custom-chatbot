@@ -9,7 +9,7 @@ def get_bot_name() -> str:
     Get bot name with app instance suffix.
     
     Returns:
-        Bot name like "hrbot-jo" or "hrbot-us"
+        Bot name like "UWBot"
     """
     app_config = get_app_config()
     return app_config.name
@@ -19,7 +19,7 @@ def get_bot_display_name() -> str:
     Get bot display name for UI.
     
     Returns:
-        Display name like "HR Bot (Jo)" or "HR Bot (US)"
+        Display name like "UWBot"
     """
     app_config = get_app_config()
     return app_config.name 

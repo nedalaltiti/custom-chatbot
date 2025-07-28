@@ -23,7 +23,11 @@ from uwbot.utils.error import BaseError, ErrorSeverity
 from uwbot.services.session_tracker import SessionTracker   
 from uwbot.services.gemini_service import GeminiService
 from uwbot.config.app_config import get_app_config
-from uwbot.services.contact_service import InvalidContactIDError
+
+# Simple error class for invalid contact IDs
+class InvalidContactIDError(ValueError):
+    """Raised when a contact ID is invalid or out of range."""
+    pass
 
 logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
