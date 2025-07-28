@@ -27,7 +27,7 @@ class DebugChatResponse(BaseModel):
     bot_name: str
 
 class ContactQueryRequest(BaseModel):
-    contact_id: int = Field(ge=1, le=999_999_999)
+    contact_id: int = Field(ge=1, le=99_999_999_999)
     user_id: str = "debug-user"
 
 class ContactQueryResponse(BaseModel):
@@ -40,31 +40,43 @@ class ContactQueryResponse(BaseModel):
 @router.post("/contact", response_model=ContactQueryResponse)
 async def debug_contact_query(
     req: ContactQueryRequest,
-    contact_service = Depends(get_contact_validation_uc)
+    external_validation_client = Depends(get_contact_validation_uc)
 ):
-    """Debug endpoint for testing hardship validation data check."""
+    """Debug endpoint for testing external validation API."""
     start_time = time.time()
     
-    # Check hardship validation data
-    hardship_result = await contact_service.analyze_contact_hardship(req.contact_id)
-    hardship_response = contact_service.format_contact_response(hardship_result)
+    # Call external validation API
+    validation_result = await external_validation_client.validate_combined(
+        contact_id=req.contact_id,
+        user_id=req.user_id,
+        user_name="debug-user"
+    )
+    
+    if validation_result.is_success():
+        contact_info = validation_result.value
+        response = contact_info.get('message', 'No response available')
+        success = True
+    else:
+        contact_info = None
+        response = f"Error: {validation_result.error}"
+        success = False
     
     processing_time = time.time() - start_time
     
     return ContactQueryResponse(
         contact_id=req.contact_id,
-        contact_info=hardship_result,
-        response=hardship_response,
-        success=hardship_result is not None,
+        contact_info=contact_info,
+        response=response,
+        success=success,
         processing_time=round(processing_time, 2)
     )
 
 @router.post("/chat", response_model=DebugChatResponse)
 async def debug_chat(
     req: DebugChatRequest,
-    contact_service = Depends(get_contact_validation_uc)
+    external_validation_client = Depends(get_contact_validation_uc)
 ):
-    """Debug endpoint that returns hardship validation check response for testing."""
+    """Debug endpoint that returns external validation check response for testing."""
     import time
     start_time = time.time()
     
@@ -97,14 +109,32 @@ async def debug_chat(
         )
         
         # Check if message contains contact ID
-        contact_id = contact_service.extract_contact_id_from_message(req.text)
+        contact_id = extract_contact_id_from_message(req.text)
         
         processing_time = time.time() - start_time
         
         if contact_id:
-            # Check hardship validation data
-            result = await contact_service.analyze_contact_hardship(contact_id)
-            bot_response = contact_service.format_contact_response(result)
+            # Call external validation API
+            validation_result = await external_validation_client.validate_combined(
+                contact_id=contact_id,
+                user_id=req.user_id,
+                user_name="debug-user"
+            )
+            
+            if validation_result.is_success():
+                bot_response = validation_result.value.get('message', 'No response available')
+                intent_type = "validation"
+            else:
+                # Handle validation error
+                error_msg = validation_result.error
+                if "Invalid contact ID" in error_msg:
+                    from uwbot.utils.validation_responses import format_invalid_contact_id_response
+                    bot_response = format_invalid_contact_id_response(contact_id)
+                    intent_type = "error"
+                else:
+                    from uwbot.utils.validation_responses import format_error_response
+                    bot_response = format_error_response(contact_id, f"Error validating contact {contact_id}: {error_msg}", "validation")
+                    intent_type = "error"
             
             # Save bot response to database
             await message_service.add_message(
@@ -115,7 +145,7 @@ async def debug_chat(
                 session_id=session_id,
                 role="bot",
                 text=bot_response,
-                intent="validation",
+                intent=intent_type,
                 reply_to_id=user_msg_id,
             )
         else:
@@ -154,5 +184,45 @@ async def debug_chat(
             app_instance=app_config.instance_id,
             bot_name=bot_name
         )
+
+def extract_contact_id_from_message(message: str) -> Optional[int]:
+    """
+    Extract contact ID from user message using various patterns.
+    
+    Args:
+        message: User message text
+        
+    Returns:
+        Contact ID if found and valid, None otherwise
+    """
+    import re
+    
+    # Look for patterns like "ID 123", "contact 456", "user 789", etc.
+    # Only capture positive numbers (no negative numbers)
+    patterns = [
+        r'(?:contact|user|id|person)\s+(?:#)?(\d+)',
+        r'(\d+)\s+(?:contact|user|id)',
+        r'find\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'get\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'look\s+up\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'search\s+for\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'(\d+)',  # Fallback: just look for any positive number
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, message.lower())
+        if match:
+            try:
+                contact_id = int(match.group(1))
+                # Validate the extracted contact ID
+                if 1 <= contact_id <= 99_999_999_999:
+                    return contact_id
+                else:
+                    logger.warning(f"Extracted invalid contact ID from message: {contact_id}")
+                    return None
+            except (ValueError, IndexError):
+                continue
+    
+    return None
 
  

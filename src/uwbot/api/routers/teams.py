@@ -14,10 +14,12 @@ from uwbot.utils.bot_name import get_bot_name
 from uwbot.utils.message import is_pure_greeting
 from uwbot.utils.intent import classify_intent
 from uwbot.utils.di import get_llm
-from uwbot.services.contact_service import InvalidContactIDError
+from uwbot.services.external_validation_client import ExternalValidationClient
 import logging
 from pydantic import BaseModel
 import time
+import re
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +51,49 @@ async def _ensure_user_message_saved(user_message: str, user_id: str, session_id
     
     return user_msg_id
 
+def extract_contact_id_from_message(message: str) -> Optional[int]:
+    """
+    Extract contact ID from user message using various patterns.
+    
+    Args:
+        message: User message text
+        
+    Returns:
+        Contact ID if found and valid, None otherwise
+    """
+    # Look for patterns like "ID 123", "contact 456", "user 789", etc.
+    # Only capture positive numbers (no negative numbers)
+    patterns = [
+        r'(?:contact|user|id|person)\s+(?:#)?(\d+)',
+        r'(\d+)\s+(?:contact|user|id)',
+        r'find\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'get\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'look\s+up\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'search\s+for\s+(?:contact|user)\s+(?:#)?(\d+)',
+        r'(\d+)',  # Fallback: just look for any positive number
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, message.lower())
+        if match:
+            try:
+                contact_id = int(match.group(1))
+                # Validate the extracted contact ID
+                if 1 <= contact_id <= 99_999_999_999:
+                    return contact_id
+                else:
+                    logger.warning(f"Extracted invalid contact ID from message: {contact_id}")
+                    return None
+            except (ValueError, IndexError):
+                continue
+    
+    return None
+
 @router.post("/")
 async def teams_messages(
     req: TeamsMessageRequest, 
     background_tasks: BackgroundTasks,
-    contact_service = Depends(get_contact_validation_uc),
-    combined_validation_service = Depends(get_combined_validation_uc),
+    external_validation_client = Depends(get_combined_validation_uc),
     teams_feedback_handler = Depends(get_teams_feedback_handler),
     card_action_handler = Depends(get_card_action_handler),
     feedback_card_tracker = Depends(get_feedback_card_tracker)
@@ -350,7 +389,7 @@ async def teams_messages(
         
         return TeamsActivityResponse(text="")
     
-    contact_id = contact_service.extract_contact_id_from_message(user_message)
+    contact_id = extract_contact_id_from_message(user_message)
     
     if contact_id:
         logger.info(f"Contact query detected for ID: {contact_id}")
@@ -365,23 +404,38 @@ async def teams_messages(
             except Exception as e:
                 logger.warning(f"Failed to send typing indicator: {e}")
         
-        # Always perform combined validation by default
-        # Check both hardship and budget validation data
+        # Call external validation API
         try:
-            # First, get hardship data (this will be cached for the request)
-            hardship_data = await contact_service.get_contact_with_hardship_data(contact_id)
+            logger.info(f"Calling external validation API for contact {contact_id}")
+            validation_result = await external_validation_client.validate_combined(
+                contact_id=contact_id,
+                user_id=user_id,
+                user_name=user_name
+            )
             
-            # Then perform combined validation using the new service
-            contact = await combined_validation_service.validate_contact_with_prefetched_data(contact_id, hardship_data)
-            contact_response = contact.get('formatted_response', 'No response available')
-            intent_type = "combined_validation"
-            logger.info(f"Performing combined validation for contact {contact_id} with cached hardship data")
-        except InvalidContactIDError as e:
-            from uwbot.utils.validation_responses import format_invalid_contact_id_response
-            contact_response = format_invalid_contact_id_response(contact_id)
+            if validation_result.is_success():
+                contact_response = validation_result.value.get('message', 'No response available')
+                intent_type = "combined_validation"
+                logger.info(f"External validation successful for contact {contact_id}")
+            else:
+                # Handle validation error
+                error_msg = validation_result.error
+                if "Invalid contact ID" in error_msg:
+                    from uwbot.utils.validation_responses import format_invalid_contact_id_response
+                    contact_response = format_invalid_contact_id_response(contact_id)
+                    intent_type = "error"
+                    logger.warning(f"Invalid contact ID in Teams message: {error_msg}")
+                else:
+                    from uwbot.utils.validation_responses import format_error_response
+                    contact_response = format_error_response(contact_id, f"Error validating contact {contact_id}: {error_msg}", "validation")
+                    intent_type = "error"
+                    logger.error(f"External validation failed for contact {contact_id}: {error_msg}")
+                    
+        except Exception as e:
+            logger.error(f"Unexpected error calling external validation API: {e}")
+            from uwbot.utils.validation_responses import format_error_response
+            contact_response = format_error_response(contact_id, f"Error connecting to validation service for contact {contact_id}. Please try again.", "validation")
             intent_type = "error"
-            logger.warning(f"Invalid contact ID in Teams message: {e}")
-            contact = None
         
         # Store bot message and get its database ID
         bot_msg_id = await _persist_bot_msg(user_msg_id, contact_response, intent_type)
