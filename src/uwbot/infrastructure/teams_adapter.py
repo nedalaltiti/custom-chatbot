@@ -157,21 +157,39 @@ class TeamsAdapter:
         return activity_id if ok else None
 
     async def update_card(self, svc_url: str, conv_id: str, act_id: str, card: dict) -> bool:
-        token = await self.get_bot_token()
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities/{act_id}"
-        payload = {
-            "type": "message",
-            "attachments": [{
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": card,
-            }],
-        }
-        resp = await _get_http().put(url, headers=headers, json=payload)
-        if resp.is_success:
-            return True
-        logger.warning("update_card failed %s – %s", resp.status_code, resp.text)
-        return False
+        """Update an existing adaptive card with new content.
+        
+        Note: Teams API may not support updating all card types. This method
+        attempts to update the card but may fail silently in some cases.
+        """
+        try:
+            token = await self.get_bot_token()
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities/{act_id}"
+            
+            payload = {
+                "type": "message",
+                "attachments": [{
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "content": card,
+                }],
+            }
+            
+            logger.debug(f"Updating card at {url} with payload: {payload}")
+            resp = await _get_http().put(url, headers=headers, json=payload)
+            
+            if resp.is_success:
+                logger.info(f"Successfully updated card {act_id} in conversation {conv_id}")
+                return True
+            else:
+                logger.warning(f"update_card failed {resp.status_code} – {resp.text}")
+                # Teams API may not support updating certain card types
+                # This is not necessarily an error, just a limitation
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error updating card {act_id} in conversation {conv_id}: {e}")
+            return False
     
     async def delete_activity(self, svc_url: str, conv_id: str, act_id: str) -> bool:
         """Delete a previously-posted activity so it disappears from the chat."""

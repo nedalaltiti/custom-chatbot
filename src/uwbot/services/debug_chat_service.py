@@ -9,11 +9,12 @@ import logging
 import time
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
-from uwbot.services.contact_service import ContactService
 from uwbot.services.message_service import MessageService
 from uwbot.services.session_tracker import session_tracker
 from uwbot.utils.bot_name import get_bot_name
 from uwbot.utils.validation_responses import format_debug_help_message
+from uwbot.services.external_validation_client import ExternalValidationClient
+from uwbot.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,12 @@ class DebugChatResponse(BaseModel):
 class DebugChatService:
     """Service for handling debug chat functionality."""
     
-    def __init__(self, contact_service: ContactService, message_service: MessageService):
-        self.contact_service = contact_service
+    def __init__(self, message_service: MessageService):
         self.message_service = message_service
+        self.external_validation_client = ExternalValidationClient(
+            api_base_url=settings.external_validation.api_base_url,
+            timeout=settings.external_validation.timeout
+        )
     
     async def process_debug_chat(self, req: DebugChatRequest) -> DebugChatResponse:
         """
@@ -58,12 +62,12 @@ class DebugChatService:
             user_msg_id = await self._save_user_message(req, session_id)
             
             # Check if message contains contact ID
-            contact_id = self.contact_service.extract_contact_id_from_message(req.text)
+            contact_id = self._extract_contact_id_from_message(req.text)
             
             processing_time = time.time() - start_time
             
             if contact_id:
-                # Process contact validation
+                # Process contact validation using external API
                 bot_response = await self._process_contact_validation(contact_id, req.user_id, session_id, user_msg_id)
             else:
                 # No contact ID found - provide help message
@@ -115,7 +119,7 @@ class DebugChatService:
         user_msg_id: int
     ) -> str:
         """
-        Process contact validation for debug chat.
+        Process contact validation for debug chat using external API.
         
         Args:
             contact_id: The contact ID to validate
@@ -126,9 +130,24 @@ class DebugChatService:
         Returns:
             The bot response text
         """
-        # Check hardship validation data
-        result = await self.contact_service.analyze_contact_hardship(contact_id)
-        bot_response = self.contact_service.format_contact_response(result)
+        # Call external validation API
+        validation_result = await self.external_validation_client.validate_combined(
+            contact_id=contact_id,
+            user_id=user_id,
+            user_name="debug-user"
+        )
+        
+        if validation_result.is_success():
+            bot_response = validation_result.value.get('message', 'No response available')
+        else:
+            # Handle validation error
+            error_msg = validation_result.error
+            if "Invalid contact ID" in error_msg:
+                from uwbot.utils.validation_responses import format_invalid_contact_id_response
+                bot_response = format_invalid_contact_id_response(contact_id)
+            else:
+                from uwbot.utils.validation_responses import format_error_response
+                bot_response = format_error_response(contact_id, f"Error validating contact {contact_id}: {error_msg}", "validation")
         
         # Save bot response to database
         await self.message_service.add_message(
@@ -180,6 +199,46 @@ class DebugChatService:
         
         return bot_response
     
+    def _extract_contact_id_from_message(self, message: str) -> Optional[int]:
+        """
+        Extract contact ID from user message using various patterns.
+        
+        Args:
+            message: The message to test
+            
+        Returns:
+            The extracted contact ID or None
+        """
+        import re
+        
+        # Look for patterns like "ID 123", "contact 456", "user 789", etc.
+        # Only capture positive numbers (no negative numbers)
+        patterns = [
+            r'(?:contact|user|id|person)\s+(?:#)?(\d+)',
+            r'(\d+)\s+(?:contact|user|id)',
+            r'find\s+(?:contact|user)\s+(?:#)?(\d+)',
+            r'get\s+(?:contact|user)\s+(?:#)?(\d+)',
+            r'look\s+up\s+(?:contact|user)\s+(?:#)?(\d+)',
+            r'search\s+for\s+(?:contact|user)\s+(?:#)?(\d+)',
+            r'(\d+)',  # Fallback: just look for any positive number
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, message.lower())
+            if match:
+                try:
+                    contact_id = int(match.group(1))
+                    # Validate the extracted contact ID
+                    if 1 <= contact_id <= 99_999_999_999:
+                        return contact_id
+                    else:
+                        logger.warning(f"Extracted invalid contact ID from message: {contact_id}")
+                        return None
+                except (ValueError, IndexError):
+                    continue
+        
+        return None
+    
     async def test_contact_extraction(self, message: str) -> Optional[int]:
         """
         Test contact ID extraction from a message.
@@ -190,7 +249,7 @@ class DebugChatService:
         Returns:
             The extracted contact ID or None
         """
-        return self.contact_service.extract_contact_id_from_message(message)
+        return self._extract_contact_id_from_message(message)
     
     async def get_debug_stats(self) -> Dict[str, Any]:
         """
@@ -201,7 +260,8 @@ class DebugChatService:
         """
         return {
             "service_name": "DebugChatService",
-            "contact_service_available": self.contact_service is not None,
             "message_service_available": self.message_service is not None,
-            "session_tracker_available": session_tracker is not None
+            "session_tracker_available": session_tracker is not None,
+            "external_validation_client_available": self.external_validation_client is not None,
+            "external_validation_api_url": settings.external_validation.api_base_url
         } 

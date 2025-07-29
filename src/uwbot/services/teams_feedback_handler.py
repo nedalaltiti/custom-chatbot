@@ -182,16 +182,24 @@ class TeamsFeedbackHandler:
             # Method 1: Use reply_to_id if available
             if reply_to_id:
                 target_message_id = self.feedback_service.get_bot_message_id_from_activity(reply_to_id)
+                logger.info(f"🔵 Looking up message ID for Teams activity {reply_to_id} -> found: {target_message_id}")
                 if target_message_id:
                     logger.info(f"🔵 Found target message via reply_to_id: {reply_to_id} -> {target_message_id}")
+                else:
+                    logger.warning(f"🔵 No message mapping found for activity ID: {reply_to_id}")
+                    # Debug: Let's see what mappings we have
+                    logger.info(f"🔵 Available activity mappings: {list(self.feedback_service.activity_to_message_id.keys())}")
             
             # Record the feedback if we have a target message
             if target_message_id:
                 try:
-                    await self.feedback_service.record_message_reply_feedback(
+                    # For built-in Teams feedback, use the MessageReplyFeedback table
+                    # Use the original feedback text without adding message ID
+                    await self.feedback_service.record_builtin_teams_feedback(
                         message_id=target_message_id,
                         feedback=standardized_feedback,
-                        feedback_comment=str(feedback_text).strip(),
+                        feedback_comment=feedback_text,
+                        user_id=user_id,
                     )
                     logger.info(f"🔵 Recorded built-in feedback for message {target_message_id}: {standardized_feedback}")
                 except Exception as e:

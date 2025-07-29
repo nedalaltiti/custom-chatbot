@@ -10,14 +10,26 @@ from uwbot.infrastructure.teams_adapter import TeamsAdapter
 from uwbot.config.settings import settings
 from uwbot.infrastructure.cards import create_feedback_card
 from sqlalchemy.exc import SQLAlchemyError
-from uwbot.db.models import Rating, MessageReplyFeedback
+from uwbot.db.models import Rating, MessageReplyFeedback, MessageReply
 from uwbot.db.session import get_db_session_context
 from uwbot.utils.bot_name import get_bot_name
 
 logger = logging.getLogger(__name__)
 
 class FeedbackService:
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
+        # Only initialize if this is the first time
+        if hasattr(self, '_initialized'):
+            return
+        self._initialized = True
+        
         self.adapter = TeamsAdapter()
         self.pending_feedback = {}  # user_id: asyncio.Task - tracks scheduled feedback tasks
         self.user_activity = {}     # user_id: last_activity_time - tracks user activity
@@ -29,6 +41,8 @@ class FeedbackService:
         # Default settings
         self.default_timeout_minutes = getattr(settings.feedback, 'feedback_timeout_minutes', 10)
         self.activity_check_interval = 30  # Check user activity every 30 seconds
+        
+        logger.info("FeedbackService singleton initialized")
 
     def track_user_activity(self, user_id: str):
         """
@@ -48,7 +62,10 @@ class FeedbackService:
         """
         if teams_activity_id and bot_message_db_id:
             self.activity_to_message_id[teams_activity_id] = bot_message_db_id
-            logger.debug(f"Mapped Teams activity {teams_activity_id} to bot message DB ID {bot_message_db_id}")
+            logger.info(f"📋 Mapped Teams activity {teams_activity_id} to bot message DB ID {bot_message_db_id}")
+            logger.info(f"📋 Current mappings count: {len(self.activity_to_message_id)}")
+        else:
+            logger.warning(f"📋 Failed to map activity - activity_id: {teams_activity_id}, bot_msg_id: {bot_message_db_id}")
 
     def get_bot_message_id_from_activity(self, teams_activity_id: str) -> int | None:
         """
@@ -60,7 +77,10 @@ class FeedbackService:
         Returns:
             The bot message database ID, or None if not found
         """
-        return self.activity_to_message_id.get(teams_activity_id)
+        result = self.activity_to_message_id.get(teams_activity_id)
+        logger.info(f"🔍 Looking up Teams activity {teams_activity_id} -> found: {result}")
+        logger.info(f"🔍 Available mappings: {list(self.activity_to_message_id.keys())}")
+        return result
 
     def schedule_delayed_feedback(self, user_id: str, service_url: str, conversation_id: str, delay_minutes: int = None, on_card_sent=None):
         """
@@ -368,5 +388,54 @@ class FeedbackService:
             return None
         except Exception as exc:
             logger.error("Unexpected error saving reply feedback: %s", exc)
+            return None
+        
+    async def record_builtin_teams_feedback(self, message_id: int, feedback: str = "", feedback_comment: str = "", user_id: str = None) -> MessageReplyFeedback | None:
+        """
+        Record built-in Teams feedback (like/dislike buttons) for a specific message.
+        
+        This method creates a message reply record first, then records the feedback
+        against that message reply, since MessageReplyFeedback expects a message_reply.id.
+        
+        Args:
+            message_id: ID of the bot message in the database
+            feedback: feedback rating (like/dislike)
+            feedback_comment: Optional comment on the message
+            user_id: User ID for the feedback
+            
+        Returns:
+            MessageReplyFeedback object or None if failed
+        """
+        utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            async with get_db_session_context() as session:
+                # First, create a message reply record for this feedback
+                # This is needed because MessageReplyFeedback references message_reply.id
+                message_reply = MessageReply(
+                    message_id=message_id,
+                    reply_message_id=message_id,  # Self-reference for feedback
+                )
+                session.add(message_reply)
+                await session.flush()  # Get the ID without committing
+                
+                # Now create the feedback record referencing the message reply
+                feedback_record = MessageReplyFeedback(
+                    message_id=message_reply.id,  # Reference the message_reply.id
+                    feedback=feedback,
+                    feedback_comment=feedback_comment,
+                    timestamp=utc_naive,
+                )
+                session.add(feedback_record)
+                
+                # Context manager automatically commits both records
+                
+                logger.info(f"Recorded built-in Teams feedback for message {message_id}: {feedback} '{feedback_comment[:50] if feedback_comment else ''}'")
+                return feedback_record
+                
+        except SQLAlchemyError as exc:
+            logger.error(f"DB error saving built-in Teams feedback: {exc}")
+            return None
+        except Exception as exc:
+            logger.error(f"Unexpected error saving built-in Teams feedback: {exc}")
             return None
         
