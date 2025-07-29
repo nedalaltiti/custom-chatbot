@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 from uwbot.infrastructure.cards import create_feedback_card
 from uwbot.infrastructure.teams_adapter import TeamsAdapter
 from uwbot.services.feedback_service import FeedbackService
+from uwbot.services.feedback_card_tracker import FeedbackCardTracker
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class CardActionHandler:
         req_value: Dict[str, Any], 
         conv_id: str, 
         service_url: str,
-        feedback_cards: Dict[str, str],
+        feedback_card_tracker: FeedbackCardTracker,
         state: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Handle submit_rating action from feedback card."""
@@ -34,27 +35,38 @@ class CardActionHandler:
             raw = req_value.get("rating")
             rating = int(raw) if str(raw).isdigit() else None
 
+            logger.info(f"Processing submit_rating action - rating: {rating}, conversation: {conv_id}")
+
             if rating:
                 # Preserve existing comment content when updating card
                 existing_comment = req_value.get("comment", "").strip()
                 
-                # Highlight stars, keep the "Provide Feedback" button with preserved comment
+                # Create new card with selected rating
                 card = create_feedback_card(
                     selected_rating=rating,
                     interactive=True,
                     existing_comment=existing_comment
                 )
-                act_id = feedback_cards.get(conv_id)
-                if act_id:
-                    # Update the existing card instead of creating a new one
-                    await self.teams_adapter.update_card(service_url, conv_id, act_id, card)
-                    logger.info(f"Updated existing feedback card for conversation {conv_id} with rating {rating}")
+                
+                # Get existing card activity ID
+                old_act_id = feedback_card_tracker.get_feedback_card_id(conv_id)
+                logger.info(f"Found existing feedback card activity ID: {old_act_id}")
+                
+                if old_act_id:
+                    # Delete the old card first
+                    try:
+                        await self.teams_adapter.delete_activity(service_url, conv_id, old_act_id)
+                        logger.info(f"Deleted old feedback card {old_act_id}")
+                    except Exception as delete_error:
+                        logger.warning(f"Failed to delete old feedback card: {delete_error}")
+                
+                # Send new card with selected rating
+                new_act = await self.teams_adapter.send_card(service_url, conv_id, card)
+                if new_act:
+                    feedback_card_tracker.track_feedback_card(conv_id, new_act)
+                    logger.info(f"Sent new feedback card with rating {rating} and activity ID: {new_act}")
                 else:
-                    # Only create new card if no existing card found
-                    logger.warning(f"No existing feedback card found for conversation {conv_id}, creating new one")
-                    new_act = await self.teams_adapter.send_card(service_url, conv_id, card)
-                    if new_act:
-                        feedback_cards[conv_id] = new_act
+                    logger.error(f"Failed to send new feedback card for conversation {conv_id}")
 
                 # Remember we showed the stars
                 state["feedback_shown"] = True
@@ -62,6 +74,8 @@ class CardActionHandler:
                 
         except Exception as e:
             logger.error(f"Error processing submit_rating: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
 
         return {"text": ""}
     
@@ -69,7 +83,7 @@ class CardActionHandler:
         self, 
         conv_id: str, 
         service_url: str,
-        feedback_cards: Dict[str, str],
+        feedback_card_tracker: FeedbackCardTracker,
         user_id: str,
         typing_sent: bool,
         _clear_user_session
@@ -86,7 +100,7 @@ class CardActionHandler:
             )
             
             # Remove current feedback card and end session
-            feedback_cards.pop(conv_id, None)
+            feedback_card_tracker.remove_feedback_card(conv_id)
             _clear_user_session(user_id)
             
         except Exception as e:
@@ -99,7 +113,7 @@ class CardActionHandler:
         req_value: Dict[str, Any], 
         conv_id: str, 
         service_url: str,
-        feedback_cards: Dict[str, str],
+        feedback_card_tracker: FeedbackCardTracker,
         user_id: str,
         state: Dict[str, Any],
         typing_sent: bool,
@@ -121,7 +135,7 @@ class CardActionHandler:
                         comment = value.strip()
                         break
             
-            logger.info(f"Processing feedback submission - user: {user_id}, rating: {rating}, comment: '{comment}'")
+            logger.info(f"Processing feedback submission - user: {user_id}, rating: {rating}, comment: '{comment}', conversation: {conv_id}")
 
             # Persist the feedback
             await self.feedback_service.record_feedback(
@@ -145,9 +159,27 @@ class CardActionHandler:
                     }
                 ]
             }
-            act_id = feedback_cards.pop(conv_id, None)
-            if act_id:
-                await self.teams_adapter.update_card(service_url, conv_id, act_id, submitted_card)
+            
+            # Get existing card activity ID
+            old_act_id = feedback_card_tracker.remove_feedback_card(conv_id)
+            logger.info(f"Removed feedback card tracking, activity ID: {old_act_id}")
+            
+            if old_act_id:
+                # Delete the old card first
+                try:
+                    await self.teams_adapter.delete_activity(service_url, conv_id, old_act_id)
+                    logger.info(f"Deleted old feedback card {old_act_id}")
+                except Exception as delete_error:
+                    logger.warning(f"Failed to delete old feedback card: {delete_error}")
+                
+                # Send new "submitted" card
+                new_act = await self.teams_adapter.send_card(service_url, conv_id, submitted_card)
+                if new_act:
+                    logger.info(f"Sent new 'submitted' feedback card with activity ID: {new_act}")
+                else:
+                    logger.error(f"Failed to send new 'submitted' feedback card for conversation {conv_id}")
+            else:
+                logger.warning(f"No feedback card activity ID found for conversation {conv_id}")
 
             state["feedback_shown"] = True
             state["awaiting_feedback"] = False 
@@ -157,6 +189,8 @@ class CardActionHandler:
             
         except Exception as e:
             logger.error(f"Error processing submit_feedback: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             # Always send a success response to prevent "Unable to reach app" errors
             try:
                 # Send typing indicator before fallback message (only if not already sent)

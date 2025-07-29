@@ -1,10 +1,12 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uwbot.config.environment import (
     get_env_var, get_env_var_bool, get_env_var_float, get_env_var_int, get_env_var_list
 )
 from uwbot.config.app_config import get_app_config
+from uwbot.utils.result import Result
+import httpx
 
 
 logger = logging.getLogger("uwbot.config")
@@ -342,71 +344,61 @@ class PerformanceSettings:
         )
 
 @dataclass(frozen=True)
-class HardshipFieldSettings:
-    """Hardship field ID configuration for database queries."""
-    financial_hardship_id: int = 1  # Default value, will be overridden by environment
-    hardship_description_id: int = 2  # Default value, will be overridden by environment
+class ExternalValidationSettings:
+    """External validation API configuration settings."""
+    api_base_url: str = "http://localhost:3978"  # Default to local validation API
+    timeout: float = 30.0  # Request timeout in seconds
     
     @classmethod
-    def from_environment(cls) -> "HardshipFieldSettings":
+    def from_environment(cls) -> "ExternalValidationSettings":
         return cls(
-            financial_hardship_id=get_env_var_int("HARDSHIP_FINANCIAL_ID", 1),
-            hardship_description_id=get_env_var_int("HARDSHIP_DESCRIPTION_ID", 2),
+            api_base_url=get_env_var("EXTERNAL_VALIDATION_API_URL", cls.api_base_url),
+            timeout=get_env_var_float("EXTERNAL_VALIDATION_TIMEOUT", cls.timeout),
         )
-    
-    def validate(self) -> bool:
-        """Validate that the field IDs are reasonable values."""
-        # Check that IDs are positive integers within reasonable range
-        if not (1 <= self.financial_hardship_id <= 999999):
-            logger.error(f"Invalid financial hardship ID: {self.financial_hardship_id}")
-            return False
-        if not (1 <= self.hardship_description_id <= 999999):
-            logger.error(f"Invalid hardship description ID: {self.hardship_description_id}")
-            return False
-        if self.financial_hardship_id == self.hardship_description_id:
-            logger.error("Financial hardship ID and hardship description ID cannot be the same")
-            return False
-        return True
 
 @dataclass(frozen=True)
-class BudgetFieldSettings:
-    """Budget field ID configuration for database queries."""
-    acctid: int = 1  # Default account ID
-    c_type: int = 2  # Default contact type
-    iscoapp: int = 0  # Default iscoapp value
-    leadstatus: int = 3  # Default lead status
-    
-    @classmethod
-    def from_environment(cls) -> "BudgetFieldSettings":
-        return cls(
-            acctid=get_env_var_int("BUDGET_ACCTID", 1),
-            c_type=get_env_var_int("BUDGET_C_TYPE", 2),
-            iscoapp=get_env_var_int("BUDGET_ISCOAPP", 0),
-            leadstatus=get_env_var_int("BUDGET_LEADSTATUS", 3),
-        )
+class HardshipFields:
+    """Hardship field configuration settings."""
+    financial_hardship_id: str = "financial_hardship"
+    hardship_description_id: str = "hardship_description"
     
     def validate(self) -> bool:
-        """Validate that the field values are reasonable."""
-        # Check that values are within reasonable ranges
-        if not (1 <= self.acctid <= 999999):
-            logger.error(f"Invalid budget acctid: {self.acctid}")
-            return False
-        if not (1 <= self.c_type <= 999999):
-            logger.error(f"Invalid budget c_type: {self.c_type}")
-            return False
-        if not (0 <= self.iscoapp <= 1):
-            logger.error(f"Invalid budget iscoapp: {self.iscoapp}")
-            return False
-        if not (1 <= self.leadstatus <= 999999):
-            logger.error(f"Invalid budget leadstatus: {self.leadstatus}")
-            return False
-        return True
+        """Validate hardship field configuration."""
+        return bool(self.financial_hardship_id and self.hardship_description_id)
+    
+    @classmethod
+    def from_environment(cls) -> "HardshipFields":
+        return cls(
+            financial_hardship_id=get_env_var("HARDSHIP_FINANCIAL_ID", cls.financial_hardship_id),
+            hardship_description_id=get_env_var("HARDSHIP_DESCRIPTION_ID", cls.hardship_description_id),
+        )
+
+@dataclass(frozen=True)
+class BudgetFields:
+    """Budget field configuration settings."""
+    acctid: str = "acctid"
+    c_type: str = "c_type"
+    iscoapp: str = "iscoapp"
+    leadstatus: str = "leadstatus"
+    
+    def validate(self) -> bool:
+        """Validate budget field configuration."""
+        return bool(self.acctid and self.c_type and self.iscoapp and self.leadstatus)
+    
+    @classmethod
+    def from_environment(cls) -> "BudgetFields":
+        return cls(
+            acctid=get_env_var("BUDGET_ACCTID", cls.acctid),
+            c_type=get_env_var("BUDGET_C_TYPE", cls.c_type),
+            iscoapp=get_env_var("BUDGET_ISCOAPP", cls.iscoapp),
+            leadstatus=get_env_var("BUDGET_LEADSTATUS", cls.leadstatus),
+        )
 
 @dataclass(frozen=True)
 class AppSettings:
     app_name: str = "UWBot Teams Bot"
     host: str = "0.0.0.0"
-    port: int = 3978
+    port: int = 3979
     debug: bool = False  # Set to False for production
     cors_origins: List[str] = field(default_factory=lambda: ["*"])  # Secure this for production
     db: DatabaseSettings = field(default_factory=DatabaseSettings.from_environment)
@@ -416,8 +408,9 @@ class AppSettings:
     feedback: FeedbackSettings = field(default_factory=FeedbackSettings.from_environment)
     aws: AWSSettings = field(default_factory=AWSSettings.from_environment)
     performance: PerformanceSettings = field(default_factory=PerformanceSettings.from_environment)
-    hardship_fields: HardshipFieldSettings = field(default_factory=HardshipFieldSettings.from_environment)
-    budget_fields: BudgetFieldSettings = field(default_factory=BudgetFieldSettings.from_environment)
+    external_validation: ExternalValidationSettings = field(default_factory=ExternalValidationSettings.from_environment)
+    hardship_fields: HardshipFields = field(default_factory=HardshipFields.from_environment)
+    budget_fields: BudgetFields = field(default_factory=BudgetFields.from_environment)
     session_idle_minutes: int = 30
 
     @classmethod
@@ -426,25 +419,13 @@ class AppSettings:
         default_cors_origins = ["*"]
         logger.info("Environment variables loaded; building AppSettings")
         
-        # Create hardship field settings and validate them
-        hardship_fields = HardshipFieldSettings.from_environment()
-        if not hardship_fields.validate():
-            raise ValueError("Invalid hardship field configuration")
-        
-        # Create budget field settings and validate them
-        budget_fields = BudgetFieldSettings.from_environment()
-        if not budget_fields.validate():
-            raise ValueError("Invalid budget field configuration")
-        
-        logger.info(f"Hardship field configuration: financial_id={hardship_fields.financial_hardship_id}, description_id={hardship_fields.hardship_description_id}")
-        logger.info(f"Budget field configuration: acctid={budget_fields.acctid}, c_type={budget_fields.c_type}, iscoapp={budget_fields.iscoapp}, leadstatus={budget_fields.leadstatus}")
-        
         return cls(
             db=DatabaseSettings.from_environment(),
             gemini=GeminiSettings.from_environment(),
             aws=AWSSettings.from_environment(),
-            hardship_fields=hardship_fields,
-            budget_fields=budget_fields,
+            external_validation=ExternalValidationSettings.from_environment(),
+            hardship_fields=HardshipFields.from_environment(),
+            budget_fields=BudgetFields.from_environment(),
             app_name=get_env_var("APP_NAME", cls.app_name),
             host=get_env_var("HOST", cls.host),
             port=get_env_var_int("PORT", cls.port),
