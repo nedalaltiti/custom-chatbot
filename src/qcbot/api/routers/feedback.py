@@ -1,0 +1,191 @@
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
+from pydantic import BaseModel
+import logging
+from qcbot.services.feedback_service import FeedbackService
+from qcbot.services.feedback import save_feedback
+from qcbot.config.settings import settings
+from typing import Optional
+from qcbot.infrastructure.cards import create_feedback_card
+from qcbot.infrastructure.teams_adapter import TeamsAdapter
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+feedback_service = FeedbackService()
+teams_adapter = TeamsAdapter()
+
+class EnhancedFeedbackRequest(BaseModel):
+    user_id: str
+    rating: int
+    comment: Optional[str] = None
+    conversation_id: Optional[str] = None
+    service_url: Optional[str] = None
+    user_name: Optional[str] = None
+    job_title: Optional[str] = None
+    session_duration: Optional[int] = None
+    message_count: Optional[int] = None
+
+@router.post("/")
+async def submit_enhanced_feedback(
+    feedback: EnhancedFeedbackRequest, 
+    background_tasks: BackgroundTasks
+):
+    """Submit enhanced feedback with detailed context."""
+    try:
+        logger.info(f"Received enhanced feedback from user {feedback.user_id}: {feedback.rating}/5")
+        
+        # Save feedback with full context
+        success = await feedback_service.record_feedback(
+            user_id=feedback.user_id,
+            rating=feedback.rating,
+            comment=feedback.comment or "",
+            conversation_id=feedback.conversation_id,
+            user_name=feedback.user_name,
+            job_title=feedback.job_title,
+            session_duration=feedback.session_duration,
+            message_count=feedback.message_count
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save feedback")
+        
+        # Send thank you message if Teams context provided
+        if feedback.service_url and feedback.conversation_id:
+            if feedback.rating >= 4:
+                message = "Thank you for your positive feedback! We're glad to hear you had a good experience."
+            elif feedback.rating == 3:
+                message = "Thank you for your feedback. We're always working to improve our services."
+            else:
+                message = "Thank you for your feedback. We're sorry your experience wasn't better, and we'll work to improve."
+                
+            background_tasks.add_task(
+                teams_adapter.send_message,
+                feedback.service_url,
+                feedback.conversation_id,
+                message
+            )
+        
+        return {"status": "success", "message": "Enhanced feedback recorded"}
+        
+    except Exception as e:
+        logger.error(f"Error processing enhanced feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process feedback: {str(e)}")
+
+@router.post("/card-action")
+async def handle_card_action(request: Request):
+    """Handle adaptive card actions and submissions for feedback."""
+    # DISABLED: This endpoint is disabled to prevent duplicate card handling
+    # All card actions should be handled by the Teams router (/api/messages) only
+    logger.warning(f"🔴 CARD ACTION ENDPOINT DISABLED: All card actions should go to /api/messages")
+    return {"status": "disabled", "message": "Use /api/messages endpoint for card actions"}
+    
+class ReplyMessageFeedback(BaseModel):
+    message_id: int
+    feedback: str
+    feedback_comment: Optional[str] = None
+
+@router.post("/reply")
+async def reply_message_feedback(
+    feedback_response: ReplyMessageFeedback,
+):
+    """Submit feedback for a specific message reply."""
+    try:
+        logger.info(f"Received feedback for message reply {feedback_response.message_id}: {feedback_response.feedback}")
+        
+        success = await feedback_service.record_message_reply_feedback(
+            message_id=feedback_response.message_id,
+            feedback=feedback_response.feedback,
+            feedback_comment=feedback_response.feedback_comment or ""
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to save feedback")
+        
+        return {"status": "success", "message": "Feedback recorded for message reply"}
+        
+    except Exception as e:
+        logger.error(f"Error processing message reply feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process feedback: {str(e)}")
+
+@router.post("/reply-card-action")
+async def reply_card_action(request: Request, background_tasks: BackgroundTasks):
+    """Handle adaptive card actions for message reply feedback."""
+    try:
+        data = await request.json()
+        logger.info(f"Received card action for reply: {data}")
+
+        # Extract key information
+        service_url = data.get("serviceUrl")
+        conversation_id = data.get("conversation", {}).get("id")
+        message_id = data.get("value", {}).get("message_id")
+
+        if not all([service_url, conversation_id, message_id]):
+            logger.error("Missing required fields in card action for reply")
+            return {"status": "error", "message": "Missing required fields"}
+
+        value = data.get("value", {})
+        action_type = value.get("action")
+
+        if action_type == "submit_feedback":
+            feedback = value.get("feedback")  # "like" or "dislike"
+            feedback_comment = value.get("comment", "")
+
+            try:
+                # Convert message_id to integer if it's a string
+                try:
+                    message_id_int = int(message_id)
+                except (ValueError, TypeError):
+                    logger.error(f"Invalid message_id format: {message_id}")
+                    raise HTTPException(status_code=400, detail="Invalid message_id format")
+                
+                # Record the feedback
+                success = await feedback_service.record_message_reply_feedback(
+                    message_id=message_id_int,
+                    feedback=feedback,
+                    feedback_comment=feedback_comment,
+                )
+
+                if not success:
+                    raise Exception("Failed to save feedback")
+                
+                # Send thank you message based on feedback type
+                message = {
+                    "like": "Thank you for your positive feedback! We're glad you had a good experience.",
+                    "neutral": "Thank you for your feedback. We're always working to improve our services.",
+                    "dislike": "Thank you for your feedback. We're sorry your experience wasn't better, and we'll work to improve."
+                }.get(feedback, "Thank you for your feedback.")
+                
+                background_tasks.add_task(
+                    teams_adapter.send_message,
+                    service_url,
+                    conversation_id,
+                    message
+                )
+                
+                return {"status": "success"}
+                
+            except Exception as e:
+                logger.error(f"Error recording feedback: {str(e)}")
+                await teams_adapter.send_message(
+                    service_url,
+                    conversation_id,
+                    "There was an error processing your feedback. Please try again."
+                )
+                return {"status": "error", "message": str(e)}
+        
+        elif action_type == "dismiss_feedback":
+            await teams_adapter.send_message(
+                service_url,
+                conversation_id,
+                "No problem! Feel free to provide feedback another time."
+            )
+            return {"status": "success"}
+            
+        return {"status": "success"}
+        
+    except Exception as e:
+        logger.error(f"Error processing card action: {str(e)}")
+        return {"status": "error", "message": str(e)}
+
+
+
