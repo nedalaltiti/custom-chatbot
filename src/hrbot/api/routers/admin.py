@@ -15,10 +15,16 @@ from pathlib import Path
 from hrbot.core.chunking import save_uploaded_file, reload_knowledge_base, process_document
 from hrbot.utils.di import get_vector_store
 from hrbot.infrastructure.vector_store import VectorStore
+from hrbot.services.feedback_service import get_feedback_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+@router.get("/feedback/metrics")
+async def get_feedback_metrics():
+    """Get feedback service memory/cleanup metrics for monitoring."""
+    svc = get_feedback_service()
+    return svc.get_metrics()
 
 @router.post("/upload")
 async def upload_doc(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):

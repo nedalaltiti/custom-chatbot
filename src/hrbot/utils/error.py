@@ -42,6 +42,9 @@ class ErrorCode(Enum):
     PERMISSION_DENIED = 3002
     STORAGE_FULL = 3003
     FILE_CORRUPTED = 3004
+    # Serialization errors (3500-3599)
+    SERIALIZATION_ERROR = 3500
+    DESERIALIZATION_ERROR = 3501
     
     # Vector store errors (4000-4999)
     EMBEDDING_FAILED = 4000
