@@ -4,7 +4,7 @@ Storage interface and implementations for the QC bot application.
 This module provides a unified storage interface with multiple backend implementations:
 - MemoryStorage: In-memory storage for testing and caching
 - FileStorage: File-based storage with serialization
-- PostgresStorage: PostgreSQL-based storage for production use
+- PostgresStorage: PostgreSQL-based async storage for production use
 
 All storage implementations follow the same interface, making it easy to switch
 between different storage backends.
@@ -21,7 +21,6 @@ from datetime import datetime
 import shutil
 
 import aiofiles  # Add async file support
-import psycopg2
 
 from qcbot.utils.error import StorageError, ErrorCode
 
@@ -346,38 +345,58 @@ class StorageFactory:
             raise ValueError(f"Unknown storage type: {storage_type}")
 
 
-# Optional Redis implementation if redis is available
+# Optional PostgreSQL implementation if asyncpg is available
 try:
-    import redis.asyncio as redis
+    import asyncpg
     
     class PostgresStorage(Storage[T]):
-        """Redis-based storage implementation."""
+        """PostgreSQL-based async storage implementation."""
         
         def __init__(
             self,
             url: str = "postgresql://localhost:5432/qcbot",
+            table_name: str = "qcbot_storage",
             serializer: str = "pickle",
             **kwargs
         ):
             """
-            Initialize Redis storage.
+            Initialize PostgreSQL storage.
             
             Args:
-                host: Redis host
-                port: Redis port
-                db: Redis database
-                prefix: Key prefix
+                url: PostgreSQL connection URL
+                table_name: Name of the table to store key-value pairs
                 serializer: Serialization format ('json' or 'pickle')
-                **kwargs: Additional Redis client arguments
+                **kwargs: Additional asyncpg connection arguments
             """
-            self.prefix = "2/qcbot"
+            self.url = url
+            self.table_name = table_name
             self.serializer = serializer
-            self.client = psycopg2.connect(url)
-            logger.info(f"Initialized Postgres storage at {url}")
+            self.pool = None
+            logger.info(f"Initialized PostgreSQL storage at {url}")
         
-        def _get_key(self, key: str) -> str:
-            """Add prefix to key."""
-            return f"{self.prefix}{key}"
+        async def _ensure_connection(self):
+            """Ensure database connection pool is established."""
+            if self.pool is None:
+                self.pool = await asyncpg.create_pool(self.url)
+                await self._create_table()
+        
+        async def _create_table(self):
+            """Create the storage table if it doesn't exist."""
+            async with self.pool.acquire() as conn:
+                await conn.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {self.table_name} (
+                        key TEXT PRIMARY KEY,
+                        value BYTEA NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+                
+                # Create index for key prefix searches
+                await conn.execute(f"""
+                    CREATE INDEX IF NOT EXISTS idx_{self.table_name}_key_prefix 
+                    ON {self.table_name} USING btree (key text_pattern_ops)
+                """)
         
         def _serialize(self, value: T) -> bytes:
             """Serialize value to bytes."""
@@ -394,115 +413,130 @@ try:
                 return pickle.loads(value)
         
         async def get(self, key: str) -> Optional[T]:
-            """Get an item from Redis storage."""
+            """Get an item from PostgreSQL storage."""
             try:
-                data = await self.client.get(self._get_key(key))
-                if data:
-                    return self._deserialize(data)
-                return None
+                await self._ensure_connection()
+                async with self.pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        f"SELECT value FROM {self.table_name} WHERE key = $1", key
+                    )
+                    if row:
+                        return self._deserialize(row['value'])
+                    return None
             except Exception as e:
-                logger.error(f"Error reading from Redis: {e}")
+                logger.error(f"Error reading from PostgreSQL: {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to read from Redis: {str(e)}",
+                    message=f"Failed to read from PostgreSQL: {str(e)}",
                     details={"key": key}
                 )
         
         async def put(self, key: str, value: T) -> bool:
-            """Put an item into Redis storage."""
+            """Put an item into PostgreSQL storage."""
             try:
-                await self.client.set(
-                    self._get_key(key),
-                    self._serialize(value)
-                )
+                await self._ensure_connection()
+                async with self.pool.acquire() as conn:
+                    await conn.execute(f"""
+                        INSERT INTO {self.table_name} (key, value, updated_at) 
+                        VALUES ($1, $2, NOW())
+                        ON CONFLICT (key) DO UPDATE SET 
+                            value = EXCLUDED.value,
+                            updated_at = NOW()
+                    """, key, self._serialize(value))
                 return True
             except Exception as e:
-                logger.error(f"Error writing to Redis: {e}")
+                logger.error(f"Error writing to PostgreSQL: {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to write to Redis: {str(e)}",
+                    message=f"Failed to write to PostgreSQL: {str(e)}",
                     details={"key": key}
                 )
         
         async def delete(self, key: str) -> bool:
-            """Delete an item from Redis storage."""
+            """Delete an item from PostgreSQL storage."""
             try:
-                count = await self.client.delete(self._get_key(key))
-                return count > 0
+                await self._ensure_connection()
+                async with self.pool.acquire() as conn:
+                    result = await conn.execute(
+                        f"DELETE FROM {self.table_name} WHERE key = $1", key
+                    )
+                    # Extract the number of affected rows from the result
+                    return result.split()[1] != '0'
             except Exception as e:
-                logger.error(f"Error deleting from Redis: {e}")
+                logger.error(f"Error deleting from PostgreSQL: {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to delete from Redis: {str(e)}",
+                    message=f"Failed to delete from PostgreSQL: {str(e)}",
                     details={"key": key}
                 )
         
         async def exists(self, key: str) -> bool:
-            """Check if an item exists in Redis storage."""
+            """Check if an item exists in PostgreSQL storage."""
             try:
-                exists = await self.client.exists(self._get_key(key))
-                return exists > 0
+                await self._ensure_connection()
+                async with self.pool.acquire() as conn:
+                    result = await conn.fetchval(
+                        f"SELECT EXISTS(SELECT 1 FROM {self.table_name} WHERE key = $1)", key
+                    )
+                    return result
             except Exception as e:
-                logger.error(f"Error checking existence in Redis: {e}")
+                logger.error(f"Error checking existence in PostgreSQL: {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to check existence in Redis: {str(e)}",
+                    message=f"Failed to check existence in PostgreSQL: {str(e)}",
                     details={"key": key}
                 )
         
         async def list_keys(self, prefix: Optional[str] = None) -> List[str]:
-            """List all keys in Redis storage."""
+            """List all keys in PostgreSQL storage."""
             try:
-                # Create pattern with both the storage prefix and the optional prefix
-                pattern = f"{self.prefix}{prefix or ''}*"
-                
-                # Use scan_iter for efficiency
-                keys = []
-                async for key in self.client.scan_iter(pattern):
-                    # Remove the storage prefix to get the original key
-                    original_key = key.decode('utf-8')[len(self.prefix):]
-                    keys.append(original_key)
-                
-                return keys
+                await self._ensure_connection()
+                async with self.pool.acquire() as conn:
+                    if prefix:
+                        # Use LIKE with proper escaping for prefix search
+                        escaped_prefix = prefix.replace('%', '\\%').replace('_', '\\_')
+                        rows = await conn.fetch(
+                            f"SELECT key FROM {self.table_name} WHERE key LIKE $1 ESCAPE '\\'",
+                            f"{escaped_prefix}%"
+                        )
+                    else:
+                        rows = await conn.fetch(f"SELECT key FROM {self.table_name}")
+                    
+                    return [row['key'] for row in rows]
             except Exception as e:
-                logger.error(f"Error listing keys in Redis: {e}")
+                logger.error(f"Error listing keys in PostgreSQL: {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to list keys in Redis: {str(e)}",
+                    message=f"Failed to list keys in PostgreSQL: {str(e)}",
                     details={"prefix": prefix}
                 )
         
         async def clear(self) -> bool:
-            """Clear all items from Redis storage with the storage prefix."""
+            """Clear all items from PostgreSQL storage."""
             try:
-                # Find all keys with the prefix
-                pattern = f"{self.prefix}*"
-                
-                # Delete keys in batches to avoid blocking Redis
-                keys_to_delete = []
-                async for key in self.client.scan_iter(pattern):
-                    keys_to_delete.append(key)
-                    if len(keys_to_delete) >= 1000:
-                        await self.client.delete(*keys_to_delete)
-                        keys_to_delete = []
-                
-                # Delete any remaining keys
-                if keys_to_delete:
-                    await self.client.delete(*keys_to_delete)
-                
+                await self._ensure_connection()
+                async with self.pool.acquire() as conn:
+                    await conn.execute(f"DELETE FROM {self.table_name}")
                 return True
             except Exception as e:
-                logger.error(f"Error clearing Redis storage: {e}")
+                logger.error(f"Error clearing PostgreSQL storage: {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to clear Redis storage: {str(e)}"
+                    message=f"Failed to clear PostgreSQL storage: {str(e)}"
                 )
         
-    # Add Redis to factory
+        async def close(self):
+            """Close the database connection pool."""
+            if self.pool:
+                await self.pool.close()
+                self.pool = None
+                logger.info("PostgreSQL connection pool closed")
+        
+    # Add PostgreSQL to factory
     def get_postgres_storage(**kwargs) -> PostgresStorage:
         return PostgresStorage(**kwargs)
-    logger.info("Postgres available. Postgres storage will be available.")  
+    logger.info("asyncpg available. PostgreSQL storage will be available.")  
     StorageFactory.get_postgres_storage = staticmethod(get_postgres_storage)
     
 except ImportError:
-    logger.info("Postgres not available. Postgres storage will not be available.")
+    logger.info("asyncpg not available. PostgreSQL storage will not be available.")
