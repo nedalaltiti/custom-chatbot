@@ -1,7 +1,7 @@
 # hrbot/api/routers/teams.py
 
 from fastapi import APIRouter, BackgroundTasks
-from hrbot.services.feedback_service import FeedbackService
+from hrbot.services.feedback_service import get_feedback_service
 from hrbot.services.message_service import MessageService
 from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 router           = APIRouter()
 adapter          = TeamsAdapter()
-feedback_service = FeedbackService()
+feedback_service = get_feedback_service()
 chat_processor   = ChatProcessor()
 message_service  = MessageService()
 noi_checker      = NOIAccessChecker()  # Initialize NOI access checker

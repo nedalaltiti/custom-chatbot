@@ -102,6 +102,8 @@ FLOW_RULES = dedent(
     - Bold important information when highlighting key details
     - If you are unsure, say so and propose reaching out for an HR representative
     - **When you don't have knowledge**: Add "For further help, you can reach out to one of our HR representatives."
+    - If you are unsure, say so and propose reaching out for an HR representative
+    - **When you don't have knowledge**: Add "For further help, you can reach out to one of our HR representatives."
     - End with the standard closing question
     
     BULLET POINT FORMATTING RULES:

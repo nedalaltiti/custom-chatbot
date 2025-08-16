@@ -1,38 +1,29 @@
 """
 
-This module provides functionality to establish and manage database connections.
+Async database connection helper using asyncpg.
 """
 import logging
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from typing import Optional
+from typing import Optional, Any
+
+import asyncpg
 
 from hrbot.config.settings import settings
 
 logger = logging.getLogger("hrbot.config")
 
 
-def get_db_connection():
-    """Create and return a PostgreSQL database connection.
-    
-    Returns:
-        A connection object to the PostgreSQL database
-        
-    Raises:
-        psycopg2.Error: If connection fails
+async def get_db_connection() -> asyncpg.Connection:
+    """Open a single asyncpg connection using settings.db.url.
+
+    Caller is responsible to close the connection.
     """
     try:
-        conn = psycopg2.connect(
-            dbname=settings.db.name,
-            user=settings.db.user,
-            password=settings.db.password,
-            host=settings.db.host,
-            port=settings.db.port,
-            sslmode=settings.db.sslmode,
-            cursor_factory=RealDictCursor
-        )
-        logger.info("Database connection established successfully")
+        # settings.db.url may be SQLAlchemy style (postgresql+asyncpg://...)
+        # asyncpg expects postgresql://...
+        url = settings.db.url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        conn = await asyncpg.connect(url)
+        logger.info("Async database connection established successfully")
         return conn
-    except psycopg2.Error as e:
-        logger.error(f"Error connecting to database: {e}")
+    except Exception as e:
+        logger.error(f"Error connecting to database asynchronously: {e}")
         raise
