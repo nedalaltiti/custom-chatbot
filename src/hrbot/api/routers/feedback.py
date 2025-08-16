@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 import logging
-from hrbot.services.feedback_service import FeedbackService
+from hrbot.services.feedback_service import get_feedback_service
 from hrbot.services.feedback import save_feedback
 from hrbot.config.settings import settings
 from typing import Optional
@@ -11,7 +11,7 @@ from hrbot.infrastructure.teams_adapter import TeamsAdapter
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-feedback_service = FeedbackService()
+feedback_service = get_feedback_service()
 teams_adapter = TeamsAdapter()
 
 class EnhancedFeedbackRequest(BaseModel):
