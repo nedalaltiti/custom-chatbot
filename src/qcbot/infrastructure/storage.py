@@ -357,6 +357,8 @@ try:
             url: str = "postgresql://localhost:5432/qcbot",
             table_name: str = "qcbot_storage",
             serializer: str = "pickle",
+            min_size: int = 10,
+            max_size: int = 20,
             **kwargs
         ):
             """
@@ -366,19 +368,67 @@ try:
                 url: PostgreSQL connection URL
                 table_name: Name of the table to store key-value pairs
                 serializer: Serialization format ('json' or 'pickle')
+                min_size: Minimum number of connections in pool
+                max_size: Maximum number of connections in pool
                 **kwargs: Additional asyncpg connection arguments
             """
+            # Validate serializer
+            if serializer not in ("json", "pickle"):
+                raise ValueError(f"Invalid serializer '{serializer}'. Must be 'json' or 'pickle'")
+            
+            # Validate and sanitize table name
+            self.table_name = self._validate_table_name(table_name)
+            
             self.url = url
-            self.table_name = table_name
             self.serializer = serializer
+            self.min_size = min_size
+            self.max_size = max_size
+            self.pool_kwargs = kwargs
             self.pool = None
             logger.info(f"Initialized PostgreSQL storage at {url}")
+        
+        def _validate_table_name(self, table_name: str) -> str:
+            """Validate and sanitize table name to prevent SQL injection."""
+            if not table_name:
+                raise ValueError("Table name cannot be empty")
+            
+            # Check for valid identifier pattern (alphanumeric + underscores, starting with letter/underscore)
+            import re
+            if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', table_name):
+                raise ValueError(
+                    f"Invalid table name '{table_name}'. "
+                    "Must contain only letters, numbers, and underscores, "
+                    "and start with a letter or underscore."
+                )
+            
+            # Prevent reserved keywords (basic check)
+            reserved_keywords = {
+                'select', 'insert', 'update', 'delete', 'drop', 'create', 
+                'alter', 'table', 'index', 'view', 'database', 'schema'
+            }
+            if table_name.lower() in reserved_keywords:
+                raise ValueError(f"Table name '{table_name}' is a reserved keyword")
+            
+            return table_name
         
         async def _ensure_connection(self):
             """Ensure database connection pool is established."""
             if self.pool is None:
-                self.pool = await asyncpg.create_pool(self.url)
-                await self._create_table()
+                try:
+                    self.pool = await asyncpg.create_pool(
+                        self.url,
+                        min_size=self.min_size,
+                        max_size=self.max_size,
+                        **self.pool_kwargs
+                    )
+                    await self._create_table()
+                except Exception as e:
+                    logger.error(f"Failed to create PostgreSQL connection pool: {e}")
+                    raise StorageError(
+                        code=ErrorCode.STORAGE_UNAVAILABLE,
+                        message=f"Cannot connect to PostgreSQL: {str(e)}",
+                        details={"url": self.url}
+                    )
         
         async def _create_table(self):
             """Create the storage table if it doesn't exist."""
@@ -400,17 +450,31 @@ try:
         
         def _serialize(self, value: T) -> bytes:
             """Serialize value to bytes."""
-            if self.serializer == "json":
-                return json.dumps(value, default=str).encode('utf-8')
-            else:
-                return pickle.dumps(value)
+            try:
+                if self.serializer == "json":
+                    return json.dumps(value, default=str).encode('utf-8')
+                else:
+                    return pickle.dumps(value)
+            except Exception as e:
+                raise StorageError(
+                    code=ErrorCode.SERIALIZATION_ERROR if hasattr(ErrorCode, 'SERIALIZATION_ERROR') else ErrorCode.STORAGE_UNAVAILABLE,
+                    message=f"Failed to serialize value using {self.serializer}: {str(e)}",
+                    details={"serializer": self.serializer, "value_type": type(value).__name__}
+                )
         
         def _deserialize(self, value: bytes) -> T:
             """Deserialize bytes to value."""
-            if self.serializer == "json":
-                return json.loads(value.decode('utf-8'))
-            else:
-                return pickle.loads(value)
+            try:
+                if self.serializer == "json":
+                    return json.loads(value.decode('utf-8'))
+                else:
+                    return pickle.loads(value)
+            except Exception as e:
+                raise StorageError(
+                    code=ErrorCode.SERIALIZATION_ERROR if hasattr(ErrorCode, 'SERIALIZATION_ERROR') else ErrorCode.STORAGE_UNAVAILABLE,
+                    message=f"Failed to deserialize value using {self.serializer}: {str(e)}",
+                    details={"serializer": self.serializer}
+                )
         
         async def get(self, key: str) -> Optional[T]:
             """Get an item from PostgreSQL storage."""
@@ -423,11 +487,20 @@ try:
                     if row:
                         return self._deserialize(row['value'])
                     return None
-            except Exception as e:
-                logger.error(f"Error reading from PostgreSQL: {e}")
+            except StorageError:
+                raise  # Re-raise our own errors (connection, serialization)
+            except asyncpg.PostgresError as e:
+                logger.error(f"PostgreSQL error reading key '{key}': {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to read from PostgreSQL: {str(e)}",
+                    message=f"Database error reading key: {str(e)}",
+                    details={"key": key, "postgres_code": getattr(e, 'sqlstate', None)}
+                )
+            except Exception as e:
+                logger.error(f"Unexpected error reading from PostgreSQL: {e}")
+                raise StorageError(
+                    code=ErrorCode.STORAGE_UNAVAILABLE,
+                    message=f"Unexpected error reading from PostgreSQL: {str(e)}",
                     details={"key": key}
                 )
         
@@ -435,6 +508,7 @@ try:
             """Put an item into PostgreSQL storage."""
             try:
                 await self._ensure_connection()
+                serialized_value = self._serialize(value)
                 async with self.pool.acquire() as conn:
                     await conn.execute(f"""
                         INSERT INTO {self.table_name} (key, value, updated_at) 
@@ -442,13 +516,22 @@ try:
                         ON CONFLICT (key) DO UPDATE SET 
                             value = EXCLUDED.value,
                             updated_at = NOW()
-                    """, key, self._serialize(value))
+                    """, key, serialized_value)
                 return True
-            except Exception as e:
-                logger.error(f"Error writing to PostgreSQL: {e}")
+            except StorageError:
+                raise  # Re-raise our own errors (connection, serialization)
+            except asyncpg.PostgresError as e:
+                logger.error(f"PostgreSQL error writing key '{key}': {e}")
                 raise StorageError(
                     code=ErrorCode.STORAGE_UNAVAILABLE,
-                    message=f"Failed to write to PostgreSQL: {str(e)}",
+                    message=f"Database error writing key: {str(e)}",
+                    details={"key": key, "postgres_code": getattr(e, 'sqlstate', None)}
+                )
+            except Exception as e:
+                logger.error(f"Unexpected error writing to PostgreSQL: {e}")
+                raise StorageError(
+                    code=ErrorCode.STORAGE_UNAVAILABLE,
+                    message=f"Unexpected error writing to PostgreSQL: {str(e)}",
                     details={"key": key}
                 )
         
@@ -460,8 +543,18 @@ try:
                     result = await conn.execute(
                         f"DELETE FROM {self.table_name} WHERE key = $1", key
                     )
-                    # Extract the number of affected rows from the result
-                    return result.split()[1] != '0'
+                    # Parse the result string "DELETE n" to get the count
+                    try:
+                        count = int(result.split()[-1])
+                        return count > 0
+                    except (IndexError, ValueError):
+                        # Fallback: check if key exists after deletion attempt
+                        exists = await conn.fetchval(
+                            f"SELECT EXISTS(SELECT 1 FROM {self.table_name} WHERE key = $1)", key
+                        )
+                        return not exists
+            except StorageError:
+                raise  # Re-raise our own errors
             except Exception as e:
                 logger.error(f"Error deleting from PostgreSQL: {e}")
                 raise StorageError(
@@ -531,6 +624,15 @@ try:
                 await self.pool.close()
                 self.pool = None
                 logger.info("PostgreSQL connection pool closed")
+        
+        async def __aenter__(self):
+            """Async context manager entry."""
+            await self._ensure_connection()
+            return self
+        
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            """Async context manager exit."""
+            await self.close()
         
     # Add PostgreSQL to factory
     def get_postgres_storage(**kwargs) -> PostgresStorage:
