@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _http: httpx.AsyncClient | None = None
 
 
-def _get_http() -> httpx.AsyncClient:
+async def _get_http() -> httpx.AsyncClient:
     global _http
     if _http is None or _http.is_closed:
         _http = httpx.AsyncClient(http2=True, timeout=10.0)
@@ -45,6 +45,13 @@ class TeamsAdapter:
 
         logger.info("Teams adapter initialised")
 
+    async def close(self) -> None:
+        """Close HTTP client resources."""
+        global _http
+        if _http is not None and not _http.is_closed:
+            await _http.aclose()
+        _http = None
+
     async def get_bot_token(self) -> str:
         """Get Bot Framework token for Teams messaging APIs."""
         now = time.time()
@@ -61,7 +68,8 @@ class TeamsAdapter:
                 "client_secret": self.app_password,
                 "scope": "https://api.botframework.com/.default",
             }
-            resp = await _get_http().post(self.BOT_TOKEN_URL, data=payload)
+            client = await _get_http()
+            resp = await client.post(self.BOT_TOKEN_URL, data=payload)
             resp.raise_for_status()
 
             body = resp.json()
@@ -88,7 +96,8 @@ class TeamsAdapter:
                 "scope": "https://graph.microsoft.com/.default"
             }
 
-            resp = await _get_http().post(token_url, data=payload)
+            client = await _get_http()
+            resp = await client.post(token_url, data=payload)
             resp.raise_for_status()
 
             body = resp.json()
@@ -107,7 +116,8 @@ class TeamsAdapter:
                 f"?$select=displayName,jobTitle"
             )
             headers = {"Authorization": f"Bearer {token}"}
-            resp = await _get_http().get(url, headers=headers)
+            client = await _get_http()
+            resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             logger.info(f"Successfully retrieved user profile for {aad_object_id}: {data}")
@@ -123,7 +133,8 @@ class TeamsAdapter:
         token = await self.get_graph_token()
         url = f"https://graph.microsoft.com/beta/users/{aad_id}/profile/positions"
         headers = {"Authorization": f"Bearer {token}"}
-        resp = await _get_http().get(url, headers=headers)
+        client = await _get_http()
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         data = resp.json()
         return data.get("value", [])
@@ -175,7 +186,8 @@ class TeamsAdapter:
                 "content": card,
             }],
         }
-        resp = await _get_http().put(url, headers=headers, json=payload)
+        client = await _get_http()
+        resp = await client.put(url, headers=headers, json=payload)
         if resp.is_success:
             return True
         logger.warning("update_card failed %s – %s", resp.status_code, resp.text)
@@ -189,7 +201,8 @@ class TeamsAdapter:
             "Content-Type":  "application/json",
         }
         url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities/{act_id}"
-        resp = await _get_http().delete(url, headers=headers)
+        client = await _get_http()
+        resp = await client.delete(url, headers=headers)
         if resp.is_success:
             return True
         logger.warning("delete_activity failed %s – %s", resp.status_code, resp.text)
@@ -237,7 +250,8 @@ class TeamsAdapter:
             token = await self.get_bot_token()
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             url = f"{svc_url.rstrip('/')}/v3/conversations/{conv_id}/activities"
-            resp = await _get_http().post(url, headers=headers, json=payload)
+            client = await _get_http()
+            resp = await client.post(url, headers=headers, json=payload)
             if resp.is_success:
                 act_id = None
                 if return_id:
