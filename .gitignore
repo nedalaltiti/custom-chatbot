@@ -194,6 +194,18 @@ __pycache__/
 
 gemini-deployment-fe9ea6bb8c92.json
 uw-gemini-2-vertex-prod-api-cf3f8a7706fd.json
-
+qc-dev-gemini-vertex-api-6973a5d24df0.json
+# macOS system files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
+# System files in data directories
+data/knowledge/.DS_Store
+data/knowledge/.DS_Store?
+data/embeddings/.DS_Store
+data/embeddings/.DS_Store?

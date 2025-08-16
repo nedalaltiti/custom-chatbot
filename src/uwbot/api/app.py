@@ -29,11 +29,15 @@ class InvalidContactIDError(ValueError):
     """Raised when a contact ID is invalid or out of range."""
     pass
 
-logging.basicConfig(
+from uwbot.utils.logging import setup_logging_with_pii_filter, get_logger_with_pii_filter
+
+# Setup logging with PII filtering
+setup_logging_with_pii_filter(
     level=logging.INFO if not settings.debug else logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format_string="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    add_pii_filter=True
 )
-logger = logging.getLogger("uwbot.app")
+logger = get_logger_with_pii_filter("uwbot.app")
 
 session_tracker = SessionTracker(idle_minutes=settings.session_idle_minutes)
 
@@ -51,8 +55,24 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     try:
         hardship_fields = settings.hardship_fields
         logger.info(f"Validating hardship field configuration...")
-        logger.info(f"  Financial hardship ID: {hardship_fields.financial_hardship_id}")
-        logger.info(f"  Hardship description ID: {hardship_fields.hardship_description_id}")
+        
+        # Mask configuration values without contact_id_ prefix
+        hardship_id = hardship_fields.financial_hardship_id
+        hardship_desc_id = hardship_fields.hardship_description_id
+        
+        # Apply simple masking for configuration values
+        if hardship_id and len(hardship_id) >= 4:
+            masked_hardship_id = f"***{hardship_id[-3:]}"
+        else:
+            masked_hardship_id = hardship_id
+            
+        if hardship_desc_id and len(hardship_desc_id) >= 4:
+            masked_hardship_desc_id = f"***{hardship_desc_id[-3:]}"
+        else:
+            masked_hardship_desc_id = hardship_desc_id
+        
+        logger.info(f"  Financial hardship ID: {masked_hardship_id}")
+        logger.info(f"  Hardship description ID: {masked_hardship_desc_id}")
         
         if not hardship_fields.validate():
             raise ValueError("Invalid hardship field configuration detected during startup")
@@ -66,10 +86,28 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     try:
         budget_fields = settings.budget_fields
         logger.info(f"Validating budget field configuration...")
-        logger.info(f"  Budget acctid: {budget_fields.acctid}")
-        logger.info(f"  Budget c_type: {budget_fields.c_type}")
-        logger.info(f"  Budget iscoapp: {budget_fields.iscoapp}")
-        logger.info(f"  Budget leadstatus: {budget_fields.leadstatus}")
+        
+        # Mask configuration values without contact_id_ prefix
+        acctid = budget_fields.acctid
+        c_type = budget_fields.c_type
+        iscoapp = budget_fields.iscoapp
+        leadstatus = budget_fields.leadstatus
+        
+        # Apply simple masking for configuration values
+        def mask_config_value(value):
+            if value and len(str(value)) >= 4:
+                return f"***{str(value)[-3:]}"
+            return value
+        
+        masked_acctid = mask_config_value(acctid)
+        masked_c_type = mask_config_value(c_type)
+        masked_iscoapp = mask_config_value(iscoapp)
+        masked_leadstatus = mask_config_value(leadstatus)
+        
+        logger.info(f"  Budget acctid: {masked_acctid}")
+        logger.info(f"  Budget c_type: {masked_c_type}")
+        logger.info(f"  Budget iscoapp: {masked_iscoapp}")
+        logger.info(f"  Budget leadstatus: {masked_leadstatus}")
         
         if not budget_fields.validate():
             raise ValueError("Invalid budget field configuration detected during startup")
