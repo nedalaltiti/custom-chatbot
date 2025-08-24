@@ -17,7 +17,11 @@ pipelines:
             - echo "Building docker image.."
             - echo "IMAGE_FULL_PROD value: '$IMAGE_FULL_PROD'"
             - echo "Checking if IMAGE_FULL_PROD is set..."
-            - if [ -z "$IMAGE_FULL_PROD" ]; then echo "ERROR: IMAGE_FULL_PROD is not set!"; exit 1; fi
+            - |
+              if [ -z "$IMAGE_FULL_PROD" ]; then
+                echo "ERROR: IMAGE_FULL_PROD is not set!"
+                exit 1
+              fi
             - docker build --no-cache -t "$IMAGE_FULL_PROD" .
             - echo "Pushing docker image to AWS ECR..."
             - docker push "$IMAGE_FULL_PROD"
@@ -33,7 +37,11 @@ pipelines:
             - echo "Building UWBot docker image.."
             - echo "UWBOT_IMAGE_FULL_PROD value: '$UWBOT_IMAGE_FULL_PROD'"
             - echo "Checking if UWBOT_IMAGE_FULL_PROD is set..."
-            - if [ -z "$UWBOT_IMAGE_FULL_PROD" ]; then echo "ERROR: UWBOT_IMAGE_FULL_PROD is not set!"; exit 1; fi
+            - |
+              if [ -z "$UWBOT_IMAGE_FULL_PROD" ]; then
+                echo "ERROR: UWBOT_IMAGE_FULL_PROD is not set!"
+                exit 1
+              fi
             - docker build --no-cache --build-arg APP_USER=uwbot -t "$UWBOT_IMAGE_FULL_PROD" .
             - echo "Pushing UWBot docker image to AWS ECR..."
             - docker push "$UWBOT_IMAGE_FULL_PROD"
@@ -70,7 +78,11 @@ pipelines:
             - echo "Building docker image.."
             - echo "IMAGE_FULL_DEV value: '$IMAGE_FULL_DEV'"
             - echo "Checking if IMAGE_FULL_DEV is set..."
-            - if [ -z "$IMAGE_FULL_DEV" ]; then echo "ERROR: IMAGE_FULL_DEV is not set!"; exit 1; fi
+            - |
+              if [ -z "$IMAGE_FULL_DEV" ]; then
+                echo "ERROR: IMAGE_FULL_DEV is not set!"
+                exit 1
+              fi
             - docker build --no-cache -t "$IMAGE_FULL_DEV" .
             - echo "Pushing docker image to AWS ECR..."
             - docker push "$IMAGE_FULL_DEV"
@@ -86,7 +98,11 @@ pipelines:
             - echo "Building UWBot docker image.."
             - echo "UWBOT_IMAGE_FULL_DEV value: '$UWBOT_IMAGE_FULL_DEV'"
             - echo "Checking if UWBOT_IMAGE_FULL_DEV is set..."
-            - if [ -z "$UWBOT_IMAGE_FULL_DEV" ]; then echo "ERROR: UWBOT_IMAGE_FULL_DEV is not set!"; exit 1; fi
+            - |
+              if [ -z "$UWBOT_IMAGE_FULL_DEV" ]; then
+                echo "ERROR: UWBOT_IMAGE_FULL_DEV is not set!"
+                exit 1
+              fi
             - docker build --no-cache --build-arg APP_USER=uwbot -t "$UWBOT_IMAGE_FULL_DEV" .
             - echo "Pushing UWBot docker image to AWS ECR..."
             - docker push "$UWBOT_IMAGE_FULL_DEV"
