@@ -1,9 +1,7 @@
 from functools import lru_cache
-from typing import Optional
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from uwbot.services.gemini_service import GeminiService
 from uwbot.services.external_validation_client import ExternalValidationClient
 from uwbot.db.session import get_db_session
 from uwbot.config.settings import settings
@@ -17,10 +15,6 @@ in tests with FastAPI's dependency-override mechanism.
 UWBot is focused on validation only.
 """
 
-@lru_cache
-def get_llm() -> GeminiService:
-    """Return a shared GeminiService instance for validation analysis."""
-    return GeminiService()
 
 @lru_cache
 def get_external_validation_client() -> ExternalValidationClient:
@@ -43,7 +37,6 @@ async def get_combined_validation_uc(
     """Get external validation client for combined validation."""
     return get_external_validation_client()
 
-# Teams feedback handler
 @lru_cache
 def get_feedback_service():
     """Get shared feedback service singleton."""
@@ -58,7 +51,6 @@ def get_teams_feedback_handler():
     feedback_service = get_feedback_service()
     return TeamsFeedbackHandler(feedback_service)
 
-# Card action handler
 @lru_cache
 def get_card_action_handler():
     """Get card action handler singleton."""
@@ -69,7 +61,6 @@ def get_card_action_handler():
     teams_adapter = TeamsAdapter()
     return CardActionHandler(feedback_service, teams_adapter)
 
-# Feedback card tracker
 @lru_cache
 def get_feedback_card_tracker():
     """Get feedback card tracker singleton."""
@@ -78,15 +69,3 @@ def get_feedback_card_tracker():
     
     teams_adapter = TeamsAdapter()
     return FeedbackCardTracker(teams_adapter)
-
-# Debug chat service
-@lru_cache
-def get_debug_chat_service():
-    """Get debug chat service singleton."""
-    from uwbot.services.debug_chat_service import DebugChatService
-    from uwbot.services.message_service import MessageService
-    
-    # Create a simple debug service that uses external validation
-    message_service = MessageService()
-    
-    return DebugChatService(message_service)

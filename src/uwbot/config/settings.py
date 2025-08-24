@@ -192,59 +192,9 @@ class DatabaseSettings:
         logger.info(f"✅ Environment variable config: host={result.host}, port={result.port}, database={result.name}")
         logger.info(f"Database URL: {result.url}")
         return result
-    
-@dataclass(frozen=True)
-class GeminiSettings:
-    model_name: str = "gemini-2.0-flash-001"
-    temperature: float = 0.0
-    max_output_tokens: int = 1024
-    api_key: Optional[str] = None  # Prefer explicit API key over default credentials
+
     use_aws_secrets: bool = False
-    credentials_path: Optional[str] = None  # Path to temp credentials file
 
-    @classmethod
-    def from_environment(cls) -> "GeminiSettings":
-        # Prefer AWS Secrets Manager *only* when explicitly enabled AND a secret name is provided
-        use_aws_secrets_global = get_env_var_bool("USE_AWS_SECRETS", True)
-        secret_name = get_env_var("AWS_GEMINI_SECRET_NAME")  # No default – skip if not set
-
-        credentials_path: Optional[str] = None
-
-        if use_aws_secrets_global and secret_name:
-            try:
-                from uwbot.utils.secret_manager import load_gemini_credentials, get_aws_region
-
-                # Get AWS configuration
-                region = get_aws_region()
-
-                logger.info(f"Loading Gemini credentials from AWS Secrets Manager: {secret_name}")
-                credentials_path = load_gemini_credentials(secret_name, region)
-
-                return cls(
-                    model_name=get_env_var("GEMINI_MODEL_NAME", cls.model_name),
-                    temperature=get_env_var_float("GEMINI_TEMPERATURE", cls.temperature),
-                    max_output_tokens=get_env_var_int("GEMINI_MAX_OUTPUT_TOKENS", cls.max_output_tokens),
-                    api_key=None,  # Will use service account from AWS
-                    use_aws_secrets=True,
-                    credentials_path=credentials_path,
-                )
-
-            except Exception as e:
-                logger.error(f"Failed to load Gemini credentials from AWS Secrets Manager: {e}")
-                logger.info("Falling back to environment variables for Gemini configuration")
-                # Fall through to environment variable method
-        elif use_aws_secrets_global and not secret_name:
-            logger.info("AWS_GEMINI_SECRET_NAME not set – skipping Gemini secret retrieval and using env vars/API key if available")
-        
-        # Default: Use environment variables
-        return cls(
-            model_name=get_env_var("GEMINI_MODEL_NAME", cls.model_name),
-            temperature=get_env_var_float("GEMINI_TEMPERATURE", cls.temperature),
-            max_output_tokens=get_env_var_int("GEMINI_MAX_OUTPUT_TOKENS", cls.max_output_tokens),
-            api_key=get_env_var("GOOGLE_API_KEY"),
-            use_aws_secrets=False,
-            credentials_path=None,
-        )
 
 @dataclass(frozen=True)
 class TeamsSettings:
@@ -311,7 +261,6 @@ class AWSSettings:
     use_secrets_manager: bool = False
     region: str = "us-west-1"
     db_secret_name: str = "chatbot-clarity-db-dev-postgres"
-    gemini_secret_name: str = "genai-gemini-vertex-prod-api"
     
     @classmethod
     def from_environment(cls) -> "AWSSettings":
@@ -319,13 +268,12 @@ class AWSSettings:
             use_secrets_manager=get_env_var_bool("USE_AWS_SECRETS", cls.use_secrets_manager),
             region=get_env_var("AWS_REGION", get_env_var("AWS_DEFAULT_REGION", cls.region)),
             db_secret_name=get_env_var("AWS_DB_SECRET_NAME", cls.db_secret_name),
-            gemini_secret_name=get_env_var("AWS_GEMINI_SECRET_NAME", cls.gemini_secret_name),
         )
 
 @dataclass(frozen=True)
 class PerformanceSettings:
     """Performance optimization settings for Microsoft Teams streaming"""
-    use_intent_classification: bool = False  # Skip Gemini-based intent classification
+    use_intent_classification: bool = False  # Skip LLM-based intent classification (uwbot uses keywords)
     min_streaming_length: int = 200  # Lowered from 400 to enable streaming for more responses
     show_acknowledgment_threshold: int = 10  # Show "looking into it" for queries > 10 words
     enable_streaming: bool = True  # Enable/disable streaming responses
@@ -399,10 +347,10 @@ class AppSettings:
     app_name: str = "UWBot Teams Bot"
     host: str = "0.0.0.0"
     port: int = 3979
+    environment: str = "development" 
     debug: bool = False  # Set to False for production
     cors_origins: List[str] = field(default_factory=lambda: ["*"])  # Secure this for production
     db: DatabaseSettings = field(default_factory=DatabaseSettings.from_environment)
-    gemini: GeminiSettings = field(default_factory=GeminiSettings.from_environment)
     teams: TeamsSettings = field(default_factory=TeamsSettings.from_environment)
     google_cloud: GoogleCloudSettings = field(default_factory=GoogleCloudSettings.from_environment)
     feedback: FeedbackSettings = field(default_factory=FeedbackSettings.from_environment)
@@ -421,7 +369,6 @@ class AppSettings:
         
         return cls(
             db=DatabaseSettings.from_environment(),
-            gemini=GeminiSettings.from_environment(),
             aws=AWSSettings.from_environment(),
             external_validation=ExternalValidationSettings.from_environment(),
             hardship_fields=HardshipFields.from_environment(),
@@ -429,6 +376,7 @@ class AppSettings:
             app_name=get_env_var("APP_NAME", cls.app_name),
             host=get_env_var("HOST", cls.host),
             port=get_env_var_int("PORT", cls.port),
+            environment=get_env_var("ENVIRONMENT", cls.environment),
             debug=get_env_var_bool("DEBUG", cls.debug),
             cors_origins=get_env_var_list("CORS_ORIGINS", default_cors_origins),
             session_idle_minutes=get_env_var_int("SESSION_IDLE_MINUTES", cls.session_idle_minutes),
@@ -439,8 +387,6 @@ try:
     logger.info(f"Config loaded for env='{settings.app_name}'")
     if settings.aws.use_secrets_manager:
         logger.info("AWS Secrets Manager integration enabled")
-    if settings.gemini.use_aws_secrets:
-        logger.info("Gemini credentials loaded from AWS Secrets Manager")
 except Exception as exc: 
     logger.critical("‼️  Failed to load configuration – exiting", exc_info=exc)
     raise

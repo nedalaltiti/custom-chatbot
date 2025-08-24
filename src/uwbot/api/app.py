@@ -20,8 +20,6 @@ from fastapi.responses import JSONResponse
 from uwbot.api.routers import admin, feedback, health, teams, debug
 from uwbot.config.settings import settings
 from uwbot.utils.error import BaseError, ErrorSeverity
-from uwbot.services.session_tracker import SessionTracker   
-from uwbot.services.gemini_service import GeminiService
 from uwbot.config.app_config import get_app_config
 
 # Simple error class for invalid contact IDs
@@ -35,15 +33,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("uwbot.app")
 
-session_tracker = SessionTracker(idle_minutes=settings.session_idle_minutes)
-
-# Store temporary credentials path for cleanup
-_temp_credentials_path = None
-
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     """Initialise expensive singletons once per process and dispose on exit."""
-    global _temp_credentials_path
     
     logger.info("UWBot starting up…")
 
@@ -91,12 +83,8 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         else:
             logger.warning("Continuing without database (SKIP_DB_INIT=true)")
 
-    # Store temporary credentials path for cleanup
-    if settings.gemini.use_aws_secrets and settings.gemini.credentials_path:
-        _temp_credentials_path = settings.gemini.credentials_path
-        logger.info("Using AWS Secrets Manager for Gemini credentials")
 
-    # Initialize LLM service in background to reduce first-request latency
+    # Initialize service in background to reduce first-request latency
     asyncio.create_task(_warmup_services())
 
     # Log current app configuration
@@ -117,15 +105,6 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         logger.info("👋  Shutting down...")
         
-        # Clean up temporary credentials if using AWS Secrets Manager
-        if _temp_credentials_path:
-            try:
-                from uwbot.utils.secret_manager import cleanup_temp_credentials
-                cleanup_temp_credentials(_temp_credentials_path)
-                logger.info("Cleaned up temporary AWS credentials")
-            except Exception as e:
-                logger.warning(f"Failed to cleanup temporary credentials: {e}")
-        
         # Clean up database connections
         try:
             from uwbot.db.session import close_database
@@ -136,12 +115,27 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
 
 async def _warmup_services():
-    """Warm up LLM service in the background."""
+    """Warm up services in the background."""
     try:
-        # Initialize Gemini
-        logger.info("Warming up Gemini service...")
-        gemini = GeminiService()
-        await gemini.test_connection()
+        logger.info("UWBot service warmup - initializing state management")
+        
+        # Initialize and check state management mode
+        from uwbot.services.hybrid_state_manager import get_hybrid_state_manager
+        state_manager = get_hybrid_state_manager()
+        
+        # Force database check to determine mode
+        database_available = await state_manager.force_database_check()
+        
+        if database_available:
+            logger.info("✅ State Management: DATABASE mode (production-ready)")
+            logger.info("   • Persistent sessions across restarts")
+            logger.info("   • Horizontal scaling support")
+            logger.info("   • Full analytics tracking")
+        else:
+            logger.warning("⚠️ State Management: IN-MEMORY mode (fallback)")
+            logger.warning("   • Sessions will be lost on restart")
+            logger.warning("   • Limited to single instance")
+            logger.warning("   • Create database tables to enable database mode")
         
         logger.info("Service warmup complete")
     except Exception as e:

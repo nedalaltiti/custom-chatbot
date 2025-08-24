@@ -243,7 +243,7 @@ class FeedbackService:
         comment: str = "",
         session_id: str | None = None,
         bot_name: str = None,
-        env: str = "development",
+        env: str = None,
         channel: str = "teams",
         conversation_id: str | None = None,
         user_name: str | None = None,
@@ -274,6 +274,10 @@ class FeedbackService:
                 # Use app-aware bot name if not provided
                 if bot_name is None:
                     bot_name = get_bot_name()
+                
+                # Use settings environment if not provided
+                if env is None:
+                    env = settings.environment
                     
                 row = Rating(
                     bot_name        = bot_name,

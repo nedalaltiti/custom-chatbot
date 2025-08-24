@@ -7,17 +7,15 @@ from uwbot.services.message_service import MessageService
 from uwbot.infrastructure.teams_adapter import TeamsAdapter
 from uwbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
 from uwbot.infrastructure.cards import create_feedback_card, create_welcome_card
-from uwbot.config.settings import settings
-from uwbot.utils.di import get_contact_validation_uc, get_combined_validation_uc, get_teams_feedback_handler, get_card_action_handler, get_feedback_card_tracker, get_debug_chat_service
-from uwbot.services.session_tracker import session_tracker 
+from uwbot.utils.di import get_combined_validation_uc, get_teams_feedback_handler, get_card_action_handler, get_feedback_card_tracker
+from uwbot.services.hybrid_session_tracker import hybrid_session_tracker
+from uwbot.services.hybrid_state_manager import get_hybrid_state_manager
 from uwbot.utils.bot_name import get_bot_name
 from uwbot.utils.message import is_pure_greeting
 from uwbot.utils.intent import classify_intent
-from uwbot.utils.di import get_llm
-from uwbot.services.external_validation_client import ExternalValidationClient
+from uwbot.config.settings import settings
+from uwbot.services.background_tasks import get_background_task_service
 import logging
-from pydantic import BaseModel
-import time
 import re
 from typing import Optional
 
@@ -27,10 +25,11 @@ router           = APIRouter()
 adapter          = TeamsAdapter()
 feedback_service = FeedbackService()
 message_service  = MessageService()
+background_tasks = get_background_task_service()
+state_manager    = get_hybrid_state_manager()
 
-# in-memory state
-first_time_users = set()    # user_ids pending their first greeting
-user_states      = {}       # user_id → {feedback_shown, last_bot_response_time}
+# Database-backed state management (replaces in-memory dictionaries)
+# first_time_users and user_states are now managed by DatabaseStateManager
 
 async def _ensure_user_message_saved(user_message: str, user_id: str, session_id: str, reply_to_id: str = None) -> int:
     """
@@ -40,7 +39,7 @@ async def _ensure_user_message_saved(user_message: str, user_id: str, session_id
     # Save to database
     user_msg_id = await message_service.add_message(
         bot_name   = get_bot_name(),
-        env        = "development",
+        env        = settings.environment,
         channel    = "teams",
         user_id    = user_id,
         session_id = session_id,
@@ -104,12 +103,12 @@ async def teams_messages(
     service_url  = req.service_url
     conv_id      = req.conversation.id
 
-    # Helper function for database persistence
+    # Helper function for critical database persistence (synchronous)
     async def _persist_bot_msg(reply_id: int, text: str, intent: str = "validation") -> int | None:
         try:
             bot_msg_id = await message_service.add_message(
                 bot_name   = get_bot_name(),
-                env        = "development",
+                env        = settings.environment,
                 channel    = "teams",
                 user_id    = user_id,
                 session_id = session_id,
@@ -122,6 +121,30 @@ async def teams_messages(
         except Exception as exc:
             logger.warning("DB write (bot msg) failed: %s", exc)
             return None
+    
+    # Helper function for non-critical database persistence (background)
+    def _schedule_bot_msg_persistence(reply_id: int, text: str, intent: str = "validation") -> asyncio.Task:
+        """Schedule bot message persistence as a background task."""
+        return background_tasks.schedule_message_persistence(
+            bot_name=get_bot_name(),
+            user_id=user_id,
+            session_id=session_id,
+            role="bot",
+            text=text,
+            intent=intent,
+            reply_to_id=reply_id,
+            channel="teams"
+        )
+    
+    # Helper function for analytics logging (background)
+    def _schedule_analytics(event_type: str, metadata: dict = None) -> asyncio.Task:
+        """Schedule analytics logging as a background task."""
+        return background_tasks.schedule_analytics_logging(
+            event_type=event_type,
+            user_id=user_id,
+            session_id=session_id,
+            metadata=metadata or {}
+        )
 
     # Send immediate typing indicator for user messages (but NOT for card actions)
     typing_sent = False
@@ -148,39 +171,33 @@ async def teams_messages(
         feedback_service.track_user_activity(user_id)
         logger.debug(f"🔄 User activity tracked for {user_id} - feedback timeout reset")
     
-    state = user_states.get(user_id)
-    if state is None:                        # first ever message from this user
+    # Get or create user state from database
+    user_state = await state_manager.get_user_state(user_id)
+    if user_state is None:
+        # First ever message from this user - create new state
         logger.info(f"Creating new session for user {user_id} - first message ever")
-        state = {
-            "awaiting_feedback":  False,
-            "feedback_shown":     False,
-            "session_id":         session_tracker.get(user_id),
-            "greeting_shown":     False,     # Track if greeting card has been shown in this session   
-            "last_bot_response_time": None,  # Track when bot last responded
-            "session_started":    True,      # Mark this as a new session start
-        }
-        user_states[user_id] = state          
-        first_time_users.add(user_id)
-        logger.info(f"Added user {user_id} to first_time_users set")
+        session_id = await hybrid_session_tracker.get(user_id)
+        user_state = await state_manager.create_user_state(
+            user_id=user_id,
+            session_id=session_id,
+            is_first_time_user=True
+        )
+        logger.info(f"Created new database state for user {user_id} with session {session_id}")
     else:
-        # If the previous session was ended, rebuild essentials for new session
-        if "session_id" not in state:
-            logger.info(f"Rebuilding session for returning user {user_id} - session was cleared, this is a NEW session")
-            state["session_id"] = session_tracker.get(user_id)
-            # Reset greeting shown flag for new session
-            state["greeting_shown"] = False
-            state["session_started"] = True  # Mark this as a new session start
-            logger.info(f"Reset greeting_shown=False for user {user_id} - new session after previous ended")
-        else:
-            # Continuing existing session
-            state.setdefault("session_started", False)
-            
-        state.setdefault("awaiting_feedback", False)
-        state.setdefault("feedback_shown", False)
-        state.setdefault("greeting_shown", False)
-        state.setdefault("last_bot_response_time", None)
-
-    session_id = state["session_id"]
+        # Existing user - update activity and get session ID
+        session_id = user_state.session_id
+        logger.debug(f"Retrieved existing state for user {user_id} with session {session_id}")
+    
+    # Track activity in database
+    await state_manager.track_user_activity(
+        user_id=user_id,
+        session_id=session_id,
+        activity_type="message",
+        metadata={"message_length": len(user_message), "is_card_action": is_card_action}
+    )
+    
+    # Convert to dictionary for backward compatibility with existing code
+    state = user_state.to_dict()
 
     # Handle ALL invoke requests to prevent "Unable to reach app" errors
     if req.type == 'invoke':
@@ -296,7 +313,7 @@ async def teams_messages(
     if is_pure_greeting_result:
         should_show_greeting = True
         greeting_reason = "pure greeting"
-    elif user_id in first_time_users and not state.get("greeting_shown", False):
+    elif user_state.is_first_time_user and not state.get("greeting_shown", False):
         should_show_greeting = True
         greeting_reason = "first time user"
     
@@ -308,10 +325,17 @@ async def teams_messages(
         
         await adapter.send_card(service_url, conv_id, welcome_card)
         
-        # Mark greeting as shown and remove from first-time users
+        # Update state in database - mark greeting as shown and no longer first-time user
+        await state_manager.update_user_state(
+            user_id=user_id,
+            greeting_shown=True,
+            session_started=False,
+            is_first_time_user=False
+        )
+        
+        # Update local state for immediate use
         state["greeting_shown"] = True
         state["session_started"] = False
-        first_time_users.discard(user_id)
         
         # Save user message to database for pure greetings
         if is_pure_greeting_result:
@@ -333,8 +357,7 @@ async def teams_messages(
     
     # Check if user is ending the conversation using intent classification
     try:
-        llm_service = get_llm()
-        intent = await classify_intent(llm_service, user_message)
+        intent = await classify_intent(user_message)
         is_ending_conversation = intent == "END"
         logger.debug(f"Intent classification for '{user_message}': {intent}")
     except Exception as e:
@@ -385,7 +408,7 @@ async def teams_messages(
             logger.error(f"Error sending feedback card after conversation end: {e}")
         
         # End the session
-        _clear_user_session(user_id, feedback_card_tracker)
+        await _clear_user_session(user_id, feedback_card_tracker)
         
         return TeamsActivityResponse(text="")
     
@@ -393,6 +416,13 @@ async def teams_messages(
     
     if contact_id:
         logger.info(f"Contact query detected for ID: {contact_id}")
+        
+        # Schedule analytics logging for validation request (background)
+        _schedule_analytics("validation_request", {
+            "contact_id": contact_id,
+            "message_length": len(user_message),
+            "is_first_time_user": user_state.is_first_time_user
+        })
         
         # Save user message first
         user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
@@ -417,6 +447,12 @@ async def teams_messages(
                 contact_response = validation_result.value.get('message', 'No response available')
                 intent_type = "combined_validation"
                 logger.info(f"External validation successful for contact {contact_id}")
+                
+                # Schedule analytics for successful validation (background)
+                _schedule_analytics("validation_success", {
+                    "contact_id": contact_id,
+                    "response_length": len(contact_response)
+                })
             else:
                 # Handle validation error
                 error_msg = validation_result.error
@@ -425,6 +461,12 @@ async def teams_messages(
                     contact_response = format_invalid_contact_id_response(contact_id)
                     intent_type = "error"
                     logger.warning(f"Invalid contact ID in Teams message: {error_msg}")
+                    
+                    # Schedule analytics for invalid contact ID (background)
+                    _schedule_analytics("validation_error", {
+                        "contact_id": contact_id,
+                        "error_type": "invalid_contact_id"
+                    })
                 else:
                     from uwbot.utils.validation_responses import format_error_response
                     contact_response = format_error_response(contact_id, f"Error validating contact {contact_id}: {error_msg}", "validation")
@@ -447,6 +489,14 @@ async def teams_messages(
         if bot_msg_id and activity_id:
             feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
             logger.debug(f"Tracked {intent_type} mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
+            
+            # Schedule feedback card tracking as background task
+            background_tasks.schedule_feedback_card_tracking(
+                user_id=user_id,
+                teams_activity_id=activity_id,
+                bot_message_id=bot_msg_id,
+                delay_minutes=10
+            )
         
         # Schedule feedback after 10 minutes of inactivity
         logger.info(f"⏰ Scheduling feedback timeout for user {user_id} in conversation {conv_id} - will trigger after 10 minutes of inactivity")
@@ -491,27 +541,23 @@ async def teams_messages(
     
     return TeamsActivityResponse(text="")
 
-# Debug endpoint using the debug chat service
-from uwbot.services.debug_chat_service import DebugChatRequest, DebugChatResponse
 
-@router.post("/debug", response_model=DebugChatResponse)
-async def debug_chat(
-    req: DebugChatRequest,
-    debug_chat_service = Depends(get_debug_chat_service)
-):
-    """Debug endpoint that returns hardship validation check response for testing."""
-    return await debug_chat_service.process_debug_chat(req)
-
-def _clear_user_session(user_id: str, feedback_card_tracker=None):
+async def _clear_user_session(user_id: str, feedback_card_tracker=None):
     """Clear per-user memory, state, and feedback tracking.
     
     This completely resets the user's session so that their next message
     will be treated as starting a new session.
     """
     
-    # Clear in-memory conversation data
-    old_state = user_states.pop(user_id, None)  # This is the key - removes session_id 
-    first_time_users.discard(user_id)  # They're no longer "first time" but can get greeting cards in new sessions
+    # Get current state for logging before clearing
+    user_state = await state_manager.get_user_state(user_id)
+    had_greeting = user_state.greeting_shown if user_state else False
+    
+    # Clear database state
+    await state_manager.clear_user_state(user_id)
+    
+    # End the session in the session tracker
+    await hybrid_session_tracker.end_session(user_id)
     
     # Clear feedback cards tracking for this user's conversations
     if feedback_card_tracker is not None:
@@ -521,11 +567,14 @@ def _clear_user_session(user_id: str, feedback_card_tracker=None):
     feedback_service.clear_user_session(user_id)
     
     # Log detailed session cleanup for debugging
-    had_greeting = old_state.get("greeting_shown", False) if old_state else False
     logger.info(f"🧹 CLEARED session for user {user_id}:")
     logger.info(f"   • greeting_shown was: {had_greeting}")
+    logger.info(f"   • Database state cleared")
     logger.info(f"   • Next greeting will trigger NEW SESSION and greeting card")
-    logger.info(f"   • Removed from first_time_users: {user_id in first_time_users}")
     
-    # Ensure the user is completely removed from session tracking so next message starts fresh
-    # This makes the next message go through the "state is None" or "session_id not in state" logic
+    # Track the session clear activity
+    await state_manager.track_user_activity(
+        user_id=user_id,
+        session_id="session_cleared",
+        activity_type="session_cleared"
+    )

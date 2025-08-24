@@ -98,7 +98,7 @@ async def debug_chat(
         # Save user message to database
         user_msg_id = await message_service.add_message(
             bot_name=bot_name,
-            env="development",
+            env=settings.environment,
             channel="debug",  # Using 'debug' channel to distinguish from teams
             user_id=req.user_id,
             session_id=session_id,
@@ -139,7 +139,7 @@ async def debug_chat(
             # Save bot response to database
             await message_service.add_message(
                 bot_name=bot_name,
-                env="development", 
+                env=settings.environment, 
                 channel="debug",
                 user_id=req.user_id,
                 session_id=session_id,
@@ -156,7 +156,7 @@ async def debug_chat(
             # Save bot response to database
             await message_service.add_message(
                 bot_name=bot_name,
-                env="development",
+                env=settings.environment,
                 channel="debug", 
                 user_id=req.user_id,
                 session_id=session_id,

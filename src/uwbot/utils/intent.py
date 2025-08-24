@@ -7,12 +7,11 @@ from uwbot.utils.result import Result
 
 __all__ = ["classify_intent"]
 
-async def classify_intent(llm_service, message: str) -> str:
+async def classify_intent(message: str) -> str:
     """
-    Classify the intent of a user message.
+    Classify the intent of a user message using keyword matching.
     
     Args:
-        llm_service: LLM service instance
         message: User message to classify
         
     Returns:

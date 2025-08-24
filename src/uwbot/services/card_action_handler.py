@@ -6,7 +6,7 @@ separating the card action processing logic from the main router.
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from uwbot.infrastructure.cards import create_feedback_card
 from uwbot.infrastructure.teams_adapter import TeamsAdapter
 from uwbot.services.feedback_service import FeedbackService
@@ -101,7 +101,7 @@ class CardActionHandler:
             
             # Remove current feedback card and end session
             feedback_card_tracker.remove_feedback_card(conv_id)
-            _clear_user_session(user_id)
+            await _clear_user_session(user_id)
             
         except Exception as e:
             logger.error(f"Error processing dismiss_feedback: {e}")
@@ -185,7 +185,7 @@ class CardActionHandler:
             state["awaiting_feedback"] = False 
             
             # End session immediately after feedback submission
-            _clear_user_session(user_id)
+            await _clear_user_session(user_id)
             
         except Exception as e:
             logger.error(f"Error processing submit_feedback: {e}")
@@ -224,17 +224,10 @@ class CardActionHandler:
                 
                 if success:
                     logger.info(f"Successfully recorded message reply feedback: message_id={message_id}, feedback={standardized_feedback}")
-                    
-                    # Send appropriate thank you message based on feedback
-                    # NO thank you message for message-level feedback
-                    # Message-level feedback should be silent and non-disruptive
-                    
                 else:
                     logger.error("Failed to record message reply feedback in database")
-                    # NO acknowledgment for message-level feedback, even on database failure
                     
             except Exception as e:
                 logger.error(f"Error recording message reply feedback: {e}")
-                # NO acknowledgment for message-level feedback, even on error
 
         return {"text": ""} 

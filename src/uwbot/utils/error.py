@@ -1,5 +1,5 @@
 """
-Error handling module for the HR bot application.
+Error handling module for the UWBot application.
 
 This module provides a standardized approach to error handling across the application with:
 1. A hierarchical error structure for different domains
@@ -9,7 +9,7 @@ This module provides a standardized approach to error handling across the applic
 """
 
 from enum import Enum
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional
 
 
 class ErrorSeverity(Enum):
@@ -35,14 +35,7 @@ class ErrorCode(Enum):
     UNAUTHORIZED = 2001
     TOKEN_EXPIRED = 2002
     INVALID_CREDENTIALS = 2003
-    
-    # LLM errors (5000-5999)
-    LLM_UNAVAILABLE = 5000
-    PROMPT_TOO_LONG = 5001
-    RESPONSE_ERROR = 5002
-    CONTENT_FILTERED = 5003
-    TOKEN_LIMIT_EXCEEDED = 5004
-    
+        
     # Teams API errors (7000-7999)
     TEAMS_API_UNAVAILABLE = 7000
     MESSAGE_DELIVERY_FAILED = 7001
@@ -50,7 +43,7 @@ class ErrorCode(Enum):
     
 
 class BaseError(Exception):
-    """Base error class for all HR bot exceptions."""
+    """Base error class for all UWBot exceptions."""
     
     def __init__(
         self,
@@ -79,7 +72,6 @@ class BaseError(Exception):
         self.severity = severity
         self.cause = cause
         
-        # Base exception init with technical message
         super().__init__(message)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -101,7 +93,6 @@ class BaseError(Exception):
         return result
 
 
-# Domain-specific error classes
 
 class ConfigError(BaseError):
     """Configuration related errors."""
@@ -145,34 +136,14 @@ class AuthError(BaseError):
             cause=cause,
         )
 
-class LLMError(BaseError):
-    """LLM-related errors."""
-    
-    def __init__(
-        self,
-        code: ErrorCode = ErrorCode.LLM_UNAVAILABLE,
-        message: str = "LLM operation failed",
-        user_message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-        severity: ErrorSeverity = ErrorSeverity.ERROR,
-        cause: Optional[Exception] = None,
-    ):
-        super().__init__(
-            code=code,
-            message=message,
-            user_message=user_message or "AI processing system error.",
-            details=details,
-            severity=severity,
-            cause=cause,
-        )
 
 class TeamsError(BaseError):
-    """Microsoft Teams API errors."""
+    """UWBot Teams API errors."""
     
     def __init__(
         self,
         code: ErrorCode = ErrorCode.TEAMS_API_UNAVAILABLE,
-        message: str = "Teams API operation failed",
+        message: str = "UWBot Teams API operation failed",
         user_message: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
         severity: ErrorSeverity = ErrorSeverity.ERROR,
@@ -181,12 +152,10 @@ class TeamsError(BaseError):
         super().__init__(
             code=code,
             message=message,
-            user_message=user_message or "Messaging system error.",
+            user_message=user_message or "UWBot messaging system error.",
             details=details,
             severity=severity,
             cause=cause,
         )
 
 
-
-# No get_user_friendly_message function present, so no changes needed. 

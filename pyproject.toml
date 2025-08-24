@@ -1,9 +1,12 @@
 [tool.poetry]
-name = "hrbot"
+name = "custom-chatbot"
 version = "0.1.0"
-description = "HR Teams Bot with Gemini and RAG"
+description = "Custom Teams Bots with Gemini and RAG"
 authors = ["Nedal Altiti <nedal.altiti@live.com>"]
-packages = [{include = "hrbot", from = "src"}]
+packages = [
+    {include = "hrbot", from = "src"},
+    {include = "uwbot", from = "src"}
+]
 
 [tool.poetry.dependencies]
 python = "^3.11"

@@ -3,7 +3,6 @@ import os
 import platform
 import sys
 from uwbot.config.settings import settings
-from uwbot.services.gemini_service import GeminiService
 from uwbot.db.session import get_connection_pool_status, AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
@@ -69,18 +68,8 @@ async def diagnostic():
         "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "Not set"),
         "GOOGLE_CLOUD_PROJECT": os.environ.get("GOOGLE_CLOUD_PROJECT", "Not set"),
         "TEAMS_APP_ID_CONFIGURED": bool(settings.teams.app_id),
-        "GEMINI_MODEL": settings.gemini.model_name,
         "DATABASE_CONFIGURED": bool(settings.db.url)
     }
-    
-    # Check Gemini connection
-    gemini_status = "Not tested"
-    try:
-        gemini = GeminiService()
-        await gemini.test_connection()
-        gemini_status = "Connected"
-    except Exception as e:
-        gemini_status = f"Error: {str(e)}"
     
     # Check database connection and pool status
     db_status = "Not tested"
@@ -93,11 +82,40 @@ async def diagnostic():
     except Exception as e:
         db_status = f"Error: {str(e)}"
     
+    # Check state management mode
+    state_management_info = {"mode": "unknown", "database_available": None}
+    try:
+        from uwbot.services.hybrid_state_manager import get_hybrid_state_manager
+        state_manager = get_hybrid_state_manager()
+        database_available = state_manager.is_using_database()
+        
+        if database_available is True:
+            state_management_info = {
+                "mode": "database",
+                "description": "Production-ready with persistent state",
+                "database_available": True,
+                "features": ["persistent_sessions", "horizontal_scaling", "analytics"]
+            }
+        elif database_available is False:
+            state_management_info = {
+                "mode": "in-memory", 
+                "description": "Fallback mode - sessions lost on restart",
+                "database_available": False,
+                "features": ["single_instance_only"]
+            }
+        else:
+            state_management_info = {
+                "mode": "undetermined",
+                "description": "Database check not yet performed",
+                "database_available": None
+            }
+    except Exception as e:
+        state_management_info["error"] = str(e)
+    
     return {
         "status": "ok",
         "system": system_info,
         "environment": env_vars,
-        "gemini": gemini_status,
         "database": {
             "status": db_status,
             "pool": pool_info,
@@ -109,5 +127,6 @@ async def diagnostic():
                 "max_overflow": settings.db.max_overflow,
                 "sslmode": settings.db.sslmode
             }
-        }
+        },
+        "state_management": state_management_info
     }
