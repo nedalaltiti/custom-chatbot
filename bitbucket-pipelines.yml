@@ -15,9 +15,12 @@ pipelines:
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
-            - docker build --no-cache -t $IMAGE_FULL_PROD .
+            - echo "IMAGE_FULL_PROD value: '$IMAGE_FULL_PROD'"
+            - echo "Checking if IMAGE_FULL_PROD is set..."
+            - if [ -z "$IMAGE_FULL_PROD" ]; then echo "ERROR: IMAGE_FULL_PROD is not set!"; exit 1; fi
+            - docker build --no-cache -t "$IMAGE_FULL_PROD" .
             - echo "Pushing docker image to AWS ECR..."
-            - docker push $IMAGE_FULL_PROD
+            - docker push "$IMAGE_FULL_PROD"
       - step:
           name: Build UWBot Docker Image (Prod)
           image: tstrohmeier/awscli:3.8.3
@@ -28,9 +31,12 @@ pipelines:
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building UWBot docker image.."
-            - docker build --no-cache --build-arg APP_USER=uwbot -t $UWBOT_IMAGE_FULL_PROD .
+            - echo "UWBOT_IMAGE_FULL_PROD value: '$UWBOT_IMAGE_FULL_PROD'"
+            - echo "Checking if UWBOT_IMAGE_FULL_PROD is set..."
+            - if [ -z "$UWBOT_IMAGE_FULL_PROD" ]; then echo "ERROR: UWBOT_IMAGE_FULL_PROD is not set!"; exit 1; fi
+            - docker build --no-cache --build-arg APP_USER=uwbot -t "$UWBOT_IMAGE_FULL_PROD" .
             - echo "Pushing UWBot docker image to AWS ECR..."
-            - docker push $UWBOT_IMAGE_FULL_PROD
+            - docker push "$UWBOT_IMAGE_FULL_PROD"
       - step:
           name: Trigger Deployment Pipeline
           image: curlimages/curl
@@ -62,9 +68,12 @@ pipelines:
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building docker image.."
-            - docker build --no-cache -t $IMAGE_FULL_DEV .
+            - echo "IMAGE_FULL_DEV value: '$IMAGE_FULL_DEV'"
+            - echo "Checking if IMAGE_FULL_DEV is set..."
+            - if [ -z "$IMAGE_FULL_DEV" ]; then echo "ERROR: IMAGE_FULL_DEV is not set!"; exit 1; fi
+            - docker build --no-cache -t "$IMAGE_FULL_DEV" .
             - echo "Pushing docker image to AWS ECR..."
-            - docker push $IMAGE_FULL_DEV
+            - docker push "$IMAGE_FULL_DEV"
       - step:
           name: Build UWBot Docker Image (Dev)
           image: tstrohmeier/awscli:3.8.3
@@ -75,9 +84,12 @@ pipelines:
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
             - echo "Building UWBot docker image.."
-            - docker build --no-cache --build-arg APP_USER=uwbot -t $UWBOT_IMAGE_FULL_DEV .
+            - echo "UWBOT_IMAGE_FULL_DEV value: '$UWBOT_IMAGE_FULL_DEV'"
+            - echo "Checking if UWBOT_IMAGE_FULL_DEV is set..."
+            - if [ -z "$UWBOT_IMAGE_FULL_DEV" ]; then echo "ERROR: UWBOT_IMAGE_FULL_DEV is not set!"; exit 1; fi
+            - docker build --no-cache --build-arg APP_USER=uwbot -t "$UWBOT_IMAGE_FULL_DEV" .
             - echo "Pushing UWBot docker image to AWS ECR..."
-            - docker push $UWBOT_IMAGE_FULL_DEV
+            - docker push "$UWBOT_IMAGE_FULL_DEV"
       - step:
           name: Trigger Deployment Pipeline
           image: curlimages/curl
