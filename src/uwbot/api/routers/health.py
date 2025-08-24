@@ -3,6 +3,7 @@ import os
 import platform
 import sys
 from uwbot.config.settings import settings
+from uwbot.services.gemini_service import GeminiService
 from uwbot.db.session import get_connection_pool_status, AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import text
@@ -68,8 +69,18 @@ async def diagnostic():
         "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "Not set"),
         "GOOGLE_CLOUD_PROJECT": os.environ.get("GOOGLE_CLOUD_PROJECT", "Not set"),
         "TEAMS_APP_ID_CONFIGURED": bool(settings.teams.app_id),
+        "GEMINI_MODEL": settings.gemini.model_name,
         "DATABASE_CONFIGURED": bool(settings.db.url)
     }
+    
+    # Check Gemini connection
+    gemini_status = "Not tested"
+    try:
+        gemini = GeminiService()
+        await gemini.test_connection()
+        gemini_status = "Connected"
+    except Exception as e:
+        gemini_status = f"Error: {str(e)}"
     
     # Check database connection and pool status
     db_status = "Not tested"
@@ -116,6 +127,7 @@ async def diagnostic():
         "status": "ok",
         "system": system_info,
         "environment": env_vars,
+        "gemini": gemini_status,
         "database": {
             "status": db_status,
             "pool": pool_info,

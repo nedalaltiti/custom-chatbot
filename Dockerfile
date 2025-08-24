@@ -106,6 +106,7 @@ COPY --chown=${APP_USER}:${APP_USER} data/ ./data/
 
 # Copy configuration files (examples for reference)
 COPY --chown=${APP_USER}:${APP_USER} instances.yaml ./
+COPY --chown=${APP_USER}:${APP_USER} .env.example ./
 
 # Copy startup script
 COPY --chown=${APP_USER}:${APP_USER} scripts/docker-entrypoint.sh ./

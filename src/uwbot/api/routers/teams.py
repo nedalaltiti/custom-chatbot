@@ -541,6 +541,16 @@ async def teams_messages(
     
     return TeamsActivityResponse(text="")
 
+# Debug endpoint using the debug chat service
+from uwbot.services.debug_chat_service import DebugChatRequest, DebugChatResponse
+
+@router.post("/debug", response_model=DebugChatResponse)
+async def debug_chat(
+    req: DebugChatRequest,
+    debug_chat_service = Depends(get_debug_chat_service)
+):
+    """Debug endpoint that returns hardship validation check response for testing."""
+    return await debug_chat_service.process_debug_chat(req)
 
 async def _clear_user_session(user_id: str, feedback_card_tracker=None):
     """Clear per-user memory, state, and feedback tracking.

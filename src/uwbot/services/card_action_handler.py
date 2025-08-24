@@ -6,7 +6,7 @@ separating the card action processing logic from the main router.
 """
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from uwbot.infrastructure.cards import create_feedback_card
 from uwbot.infrastructure.teams_adapter import TeamsAdapter
 from uwbot.services.feedback_service import FeedbackService
@@ -228,6 +228,4 @@ class CardActionHandler:
                     logger.error("Failed to record message reply feedback in database")
                     
             except Exception as e:
-                logger.error(f"Error recording message reply feedback: {e}")
-
-        return {"text": ""} 
+                logger.error(f"Error recording message reply feedback: {e}") 
