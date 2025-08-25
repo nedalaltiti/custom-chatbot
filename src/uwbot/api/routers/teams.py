@@ -7,7 +7,7 @@ from uwbot.services.message_service import MessageService
 from uwbot.infrastructure.teams_adapter import TeamsAdapter
 from uwbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
 from uwbot.infrastructure.cards import create_feedback_card, create_welcome_card
-from uwbot.utils.di import get_combined_validation_uc, get_teams_feedback_handler, get_card_action_handler, get_feedback_card_tracker
+from uwbot.utils.di import get_combined_validation_uc, get_teams_feedback_handler, get_card_action_handler, get_feedback_card_tracker   
 from uwbot.services.hybrid_session_tracker import hybrid_session_tracker
 from uwbot.services.hybrid_state_manager import get_hybrid_state_manager
 from uwbot.utils.bot_name import get_bot_name
@@ -540,51 +540,3 @@ async def teams_messages(
         feedback_service.schedule_delayed_feedback(user_id, service_url, conv_id, on_card_sent=feedback_card_tracker.create_track_feedback_card_callback())
     
     return TeamsActivityResponse(text="")
-
-# Debug endpoint using the debug chat service
-from uwbot.services.debug_chat_service import DebugChatRequest, DebugChatResponse
-
-@router.post("/debug", response_model=DebugChatResponse)
-async def debug_chat(
-    req: DebugChatRequest,
-    debug_chat_service = Depends(get_debug_chat_service)
-):
-    """Debug endpoint that returns hardship validation check response for testing."""
-    return await debug_chat_service.process_debug_chat(req)
-
-async def _clear_user_session(user_id: str, feedback_card_tracker=None):
-    """Clear per-user memory, state, and feedback tracking.
-    
-    This completely resets the user's session so that their next message
-    will be treated as starting a new session.
-    """
-    
-    # Get current state for logging before clearing
-    user_state = await state_manager.get_user_state(user_id)
-    had_greeting = user_state.greeting_shown if user_state else False
-    
-    # Clear database state
-    await state_manager.clear_user_state(user_id)
-    
-    # End the session in the session tracker
-    await hybrid_session_tracker.end_session(user_id)
-    
-    # Clear feedback cards tracking for this user's conversations
-    if feedback_card_tracker is not None:
-        feedback_card_tracker.clear_user_feedback_cards(user_id)
-    
-    # Clear feedback service session data
-    feedback_service.clear_user_session(user_id)
-    
-    # Log detailed session cleanup for debugging
-    logger.info(f"🧹 CLEARED session for user {user_id}:")
-    logger.info(f"   • greeting_shown was: {had_greeting}")
-    logger.info(f"   • Database state cleared")
-    logger.info(f"   • Next greeting will trigger NEW SESSION and greeting card")
-    
-    # Track the session clear activity
-    await state_manager.track_user_activity(
-        user_id=user_id,
-        session_id="session_cleared",
-        activity_type="session_cleared"
-    )

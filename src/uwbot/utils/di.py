@@ -78,15 +78,3 @@ def get_feedback_card_tracker():
     
     teams_adapter = TeamsAdapter()
     return FeedbackCardTracker(teams_adapter)
-
-# Debug chat service
-@lru_cache
-def get_debug_chat_service():
-    """Get debug chat service singleton."""
-    from uwbot.services.debug_chat_service import DebugChatService
-    from uwbot.services.message_service import MessageService
-    
-    # Create a simple debug service that uses external validation
-    message_service = MessageService()
-    
-    return DebugChatService(message_service)
