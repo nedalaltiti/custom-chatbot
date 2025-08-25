@@ -2,7 +2,7 @@
 set -e
 
 # Function to detect and fix AWS credentials format
-fix_aws_credentials() {
+aws_credentials() {
     echo "[ENTRYPOINT] Checking AWS credentials format..."
     
     # Check if AWS_SECRET_ACCESS_KEY looks like base64
@@ -34,7 +34,7 @@ echo "[ENTRYPOINT] SKIP_DB_INIT: ${SKIP_DB_INIT}"
 
 # Fix AWS credentials if needed
 if [[ "${USE_AWS_SECRETS}" == "true" ]]; then
-    fix_aws_credentials
+    aws_credentials
 fi
 
 # Load instance-specific environment file if it exists

@@ -196,6 +196,23 @@ app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(admin.router,  prefix="/api/admin", tags=["admin"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 
+@app.get("/")
+async def root():
+    """Root endpoint for health checks and basic info."""
+    return {
+        "service": "HR Teams Bot",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "teams": "/api/messages",
+            "feedback": "/api/feedback",
+            "admin": "/api/admin",
+            "debug": "/api/debug"
+        },
+        "documentation": "/docs" if settings.debug else "disabled in production"
+    }
+
 @app.exception_handler(BaseError)
 async def hrbot_error_handler(_: Request, exc: BaseError) -> JSONResponse:
     """Return structured JSON for domain errors; fall back to FastAPI default

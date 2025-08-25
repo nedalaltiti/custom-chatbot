@@ -98,8 +98,36 @@ class MemoryEfficientFeedbackService:
         if len(self._user_activity) > self.max_users:
             self._cleanup_oldest()
 
-        self._metrics["total_users_tracked"] += 1
-        logger.debug("Tracked activity for user %s", user_id)
+    def track_activity_to_message_mapping(self, teams_activity_id: str, bot_message_db_id: int):
+        """
+        Track the mapping between Teams activity ID and bot message database ID.
+        
+        Args:
+            teams_activity_id: The Teams activity ID returned from send_message
+            bot_message_db_id: The database ID of the bot message
+        """
+        if teams_activity_id and bot_message_db_id:
+            # Store the mapping for feedback tracking
+            # Note: This is a simplified implementation for HRBot
+            # The full implementation would store this in a database or cache
+            logger.info(f"📋 Mapped Teams activity {teams_activity_id} to bot message DB ID {bot_message_db_id}")
+        else:
+            logger.warning(f"📋 Failed to map activity - activity_id: {teams_activity_id}, bot_msg_id: {bot_message_db_id}")
+
+    def get_bot_message_id_from_activity(self, teams_activity_id: str) -> int | None:
+        """
+        Get the bot message database ID from a Teams activity ID.
+        
+        Args:
+            teams_activity_id: The Teams activity ID
+            
+        Returns:
+            The bot message database ID, or None if not found
+        """
+        # Note: This is a simplified implementation for HRBot
+        # The full implementation would retrieve from database or cache
+        logger.info(f"🔍 Looking up Teams activity {teams_activity_id} - simplified implementation")
+        return None
 
     def schedule_delayed_feedback(
         self,
