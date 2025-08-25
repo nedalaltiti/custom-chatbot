@@ -25,7 +25,7 @@ router           = APIRouter()
 adapter          = TeamsAdapter()
 feedback_service = FeedbackService()
 message_service  = MessageService()
-background_tasks = get_background_task_service()
+background_task_service = get_background_task_service()
 state_manager    = get_hybrid_state_manager()
 
 # Database-backed state management (replaces in-memory dictionaries)
@@ -125,7 +125,7 @@ async def teams_messages(
     # Helper function for non-critical database persistence (background)
     def _schedule_bot_msg_persistence(reply_id: int, text: str, intent: str = "validation") -> asyncio.Task:
         """Schedule bot message persistence as a background task."""
-        return background_tasks.schedule_message_persistence(
+        return background_task_service.schedule_message_persistence(
             bot_name=get_bot_name(),
             user_id=user_id,
             session_id=session_id,
@@ -136,16 +136,6 @@ async def teams_messages(
             channel="teams"
         )
     
-    # Helper function for analytics logging (background)
-    def _schedule_analytics(event_type: str, metadata: dict = None) -> asyncio.Task:
-        """Schedule analytics logging as a background task."""
-        return background_tasks.schedule_analytics_logging(
-            event_type=event_type,
-            user_id=user_id,
-            session_id=session_id,
-            metadata=metadata or {}
-        )
-
     # Send immediate typing indicator for user messages (but NOT for card actions)
     typing_sent = False
     
@@ -198,6 +188,16 @@ async def teams_messages(
     
     # Convert to dictionary for backward compatibility with existing code
     state = user_state.to_dict()
+
+    # Helper function for analytics logging (background) - defined here after session_id is available
+    def _schedule_analytics(event_type: str, metadata: dict = None) -> asyncio.Task:
+        """Schedule analytics logging as a background task."""
+        return background_task_service.schedule_analytics_logging(
+            event_type=event_type,
+            user_id=user_id,
+            session_id=session_id,
+            metadata=metadata or {}
+        )
 
     # Handle ALL invoke requests to prevent "Unable to reach app" errors
     if req.type == 'invoke':
@@ -491,7 +491,7 @@ async def teams_messages(
             logger.debug(f"Tracked {intent_type} mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
             
             # Schedule feedback card tracking as background task
-            background_tasks.schedule_feedback_card_tracking(
+            background_task_service.schedule_feedback_card_tracking(
                 user_id=user_id,
                 teams_activity_id=activity_id,
                 bot_message_id=bot_msg_id,

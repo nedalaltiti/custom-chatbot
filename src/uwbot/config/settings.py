@@ -294,7 +294,7 @@ class PerformanceSettings:
 @dataclass(frozen=True)
 class ExternalValidationSettings:
     """External validation API configuration settings."""
-    api_base_url: str = "http://localhost:3978"  # Default to local validation API
+    api_base_url: str = "https://underwriting-validator-dev.usclaritytech.com"
     timeout: float = 30.0  # Request timeout in seconds
     
     @classmethod

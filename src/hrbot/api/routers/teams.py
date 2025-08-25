@@ -68,6 +68,8 @@ async def get_or_create_memory(user_id: str) -> ConversationBufferMemory:
 
 async def _is_duplicate_message(message_id: str, user_id: str, user_message: str) -> bool:
     """Check if this message has already been processed to prevent duplicates."""
+    global processed_messages
+    
     if not message_id:
         return False
         
@@ -256,13 +258,13 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     message_id   = req.reply_to_id 
 
     # Check for duplicate messages to prevent processing the same message multiple times
-    if req.id:  # Teams message ID for deduplication
-        if await _is_duplicate_message(req.id, user_id, user_message):
-            logger.info(f"Skipping duplicate message {req.id} for user {user_id}")
+    if req.activity_id:  # Teams message ID for deduplication
+        if await _is_duplicate_message(req.activity_id, user_id, user_message):
+            logger.info(f"Skipping duplicate message {req.activity_id} for user {user_id}")
             return TeamsActivityResponse(text="")
     
     # Update last message ID in state
-    await _update_user_state(user_id, {"last_message_id": req.id})
+    await _update_user_state(user_id, {"last_message_id": req.activity_id})
     
     if user_message.strip():  # Only track if user sent actual message
         feedback_service.track_user_activity(user_id)
