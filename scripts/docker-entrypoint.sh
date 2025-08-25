@@ -88,16 +88,16 @@ echo "[ENTRYPOINT] Launching application on port ${PORT}"
 # Determine which application to run based on APP_TYPE or APP_INSTANCE
 if [[ "${APP_TYPE}" == "uwbot" ]]; then
     echo "[ENTRYPOINT] Starting UWBot application..."
-    exec python -m uwbot.api \
+    exec python -m uvicorn uwbot.api.app:app \
         --host "${HOST}" \
-        --port "${PORT}" 2>&1 | tee -a /app/logs/app.log
+        --port "${PORT}" \
+        --workers 1 2>&1 | tee -a /app/logs/app.log
 elif [[ "${APP_TYPE}" == "hrbot" ]] || [[ -z "${APP_TYPE}" ]]; then
     echo "[ENTRYPOINT] Starting HRBot application..."
     exec python -m uvicorn hrbot.api.app:app \
         --host "${HOST}" \
         --port "${PORT}" \
-        --workers 1 \
-        --log-config /app/logging.yaml 2>&1 | tee -a /app/logs/app.log
+        --workers 1 2>&1 | tee -a /app/logs/app.log
 else
     echo "[ENTRYPOINT] ERROR: Unknown APP_TYPE: ${APP_TYPE}. Expected 'hrbot' or 'uwbot'"
     exit 1
