@@ -92,8 +92,14 @@ if [[ "${APP_TYPE}" == "uwbot" ]]; then
         --host "${HOST}" \
         --port "${PORT}" \
         --workers 1 2>&1 | tee -a /app/logs/app.log
-elif [[ "${APP_TYPE}" == "hrbot" ]] || [[ -z "${APP_TYPE}" ]]; then
+elif [[ "${APP_TYPE}" == "hrbot" ]]; then
     echo "[ENTRYPOINT] Starting HRBot application..."
+    exec python -m uvicorn hrbot.api.app:app \
+        --host "${HOST}" \
+        --port "${PORT}" \
+        --workers 1 2>&1 | tee -a /app/logs/app.log
+elif [[ -n "${APP_INSTANCE}" ]]; then
+    echo "[ENTRYPOINT] Starting HRBot application (instance: ${APP_INSTANCE})..."
     exec python -m uvicorn hrbot.api.app:app \
         --host "${HOST}" \
         --port "${PORT}" \
