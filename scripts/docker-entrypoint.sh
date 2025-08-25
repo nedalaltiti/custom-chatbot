@@ -86,25 +86,25 @@ mkdir -p /app/data/prompts/{jo,us}
 echo "[ENTRYPOINT] Launching application on port ${PORT}"
 
 # Determine which application to run based on APP_TYPE or APP_INSTANCE
-if [[ "${APP_TYPE}" == "uwbot" ]]; then
-    echo "[ENTRYPOINT] Starting UWBot application..."
-    exec python -m uvicorn uwbot.api.app:app \
-        --host "${HOST}" \
-        --port "${PORT}" \
-        --workers 1 2>&1 | tee -a /app/logs/app.log
-elif [[ "${APP_TYPE}" == "hrbot" ]]; then
-    echo "[ENTRYPOINT] Starting HRBot application..."
-    exec python -m uvicorn hrbot.api.app:app \
-        --host "${HOST}" \
-        --port "${PORT}" \
-        --workers 1 2>&1 | tee -a /app/logs/app.log
-elif [[ -n "${APP_INSTANCE}" ]]; then
-    echo "[ENTRYPOINT] Starting HRBot application (instance: ${APP_INSTANCE})..."
-    exec python -m uvicorn hrbot.api.app:app \
-        --host "${HOST}" \
-        --port "${PORT}" \
-        --workers 1 2>&1 | tee -a /app/logs/app.log
-else
-    echo "[ENTRYPOINT] ERROR: Unknown APP_TYPE: ${APP_TYPE}. Expected 'hrbot' or 'uwbot'"
-    exit 1
-fi
+# if [[ "${APP_TYPE}" == "uwbot" ]]; then
+#     echo "[ENTRYPOINT] Starting UWBot application..."
+#     exec python -m uvicorn uwbot.api.app:app \
+#         --host "${HOST}" \
+#         --port "${PORT}" \
+#         --workers 1 2>&1 | tee -a /app/logs/app.log
+# elif [[ "${APP_TYPE}" == "hrbot" ]]; then
+#     echo "[ENTRYPOINT] Starting HRBot application..."
+#     exec python -m uvicorn hrbot.api.app:app \
+#         --host "${HOST}" \
+#         --port "${PORT}" \
+#         --workers 1 2>&1 | tee -a /app/logs/app.log
+# elif [[ -n "${APP_INSTANCE}" ]]; then
+#     echo "[ENTRYPOINT] Starting HRBot application (instance: ${APP_INSTANCE})..."
+#     exec python -m uvicorn hrbot.api.app:app \
+#         --host "${HOST}" \
+#         --port "${PORT}" \
+#         --workers 1 2>&1 | tee -a /app/logs/app.log
+# else
+#     echo "[ENTRYPOINT] ERROR: Unknown APP_TYPE: ${APP_TYPE}. Expected 'hrbot' or 'uwbot'"
+#     exit 1
+# fi
