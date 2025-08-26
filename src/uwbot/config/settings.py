@@ -295,7 +295,7 @@ class PerformanceSettings:
 class ExternalValidationSettings:
     """External validation API configuration settings."""
     api_base_url: str = "https://underwriting-validator-dev.usclaritytech.com"
-    timeout: float = 30.0  # Request timeout in seconds
+    timeout: float = 300.0  # Read timeout in seconds
     
     @classmethod
     def from_environment(cls) -> "ExternalValidationSettings":

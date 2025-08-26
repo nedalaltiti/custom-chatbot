@@ -24,7 +24,7 @@ class ValidationRequest(BaseModel):
 class ExternalValidationClient:
     """Client for calling external validation API."""
     
-    def __init__(self, api_base_url: str, timeout: float = 30.0):
+    def __init__(self, api_base_url: str, timeout: float = 300.0):
         """
         Initialize the external validation client.
         
@@ -34,8 +34,18 @@ class ExternalValidationClient:
         """
         self.api_base_url = api_base_url.rstrip('/')
         self.timeout = timeout
-        self.client = httpx.AsyncClient(timeout=timeout)
+        
+        # Configure granular timeouts for better handling of slow external APIs
+        timeout_config = httpx.Timeout(
+            connect=10.0,      # Connection establishment timeout
+            read=timeout,      # Read timeout (main timeout for slow responses)
+            write=30.0,        # Write timeout for request body
+            pool=60.0          # Pool timeout for getting connection from pool
+        )
+        
+        self.client = httpx.AsyncClient(timeout=timeout_config)
         logger.info(f"ExternalValidationClient initialized with API URL: {self.api_base_url}")
+        logger.info(f"Timeout config - connect: 10s, read: {timeout}s, write: 30s, pool: 60s")
     
     async def validate_combined(self, contact_id: int, user_id: Optional[str] = None, user_name: Optional[str] = None) -> Result[Dict[str, Any]]:
         """
@@ -92,6 +102,7 @@ class ExternalValidationClient:
             except httpx.TimeoutException:
                 error_msg = f"External validation API timeout after {self.timeout}s"
                 logger.warning(f"Timeout on attempt {attempt}/{max_retries}: {error_msg}")
+                logger.warning(f"   • This may indicate the external API backend is overloaded or stuck on this contact")
                 
                 if attempt < max_retries:
                     delay = base_delay * (2 ** (attempt - 1))
