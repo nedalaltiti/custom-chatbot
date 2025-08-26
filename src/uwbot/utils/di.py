@@ -22,13 +22,33 @@ def get_llm() -> GeminiService:
     """Return a shared GeminiService instance for validation analysis."""
     return GeminiService()
 
-@lru_cache
+# Global cache for external validation client
+_external_validation_client = None
+_cached_timeout = None
+
 def get_external_validation_client() -> ExternalValidationClient:
-    """Return a shared ExternalValidationClient instance."""
-    return ExternalValidationClient(
-        api_base_url=settings.external_validation.api_base_url,
-        timeout=settings.external_validation.timeout
-    )
+    """Return a shared ExternalValidationClient instance with cache invalidation on timeout change."""
+    global _external_validation_client, _cached_timeout
+    
+    current_timeout = settings.external_validation.timeout
+    
+    # Create new client if timeout changed or no client exists
+    if _external_validation_client is None or _cached_timeout != current_timeout:
+        if _external_validation_client is not None:
+            # Close old client if it exists
+            try:
+                import asyncio
+                asyncio.create_task(_external_validation_client.client.aclose())
+            except Exception:
+                pass  # Ignore cleanup errors
+        
+        _external_validation_client = ExternalValidationClient(
+            api_base_url=settings.external_validation.api_base_url,
+            timeout=current_timeout
+        )
+        _cached_timeout = current_timeout
+        
+    return _external_validation_client
 
 # External validation client dependency for FastAPI
 async def get_contact_validation_uc(

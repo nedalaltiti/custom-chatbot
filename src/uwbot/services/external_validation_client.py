@@ -37,15 +37,16 @@ class ExternalValidationClient:
         
         # Configure granular timeouts for better handling of slow external APIs
         timeout_config = httpx.Timeout(
-            connect=10.0,      # Connection establishment timeout
-            read=timeout,      # Read timeout (main timeout for slow responses)
-            write=30.0,        # Write timeout for request body
-            pool=60.0          # Pool timeout for getting connection from pool
+            connect=10.0,                    # Connection establishment timeout
+            read=timeout,                    # Read timeout (main timeout for slow responses)
+            write=min(timeout * 0.5, 120.0), # Write timeout (50% of read timeout, max 120s)
+            pool=60.0                        # Pool timeout for getting connection from pool
         )
         
         self.client = httpx.AsyncClient(timeout=timeout_config)
+        write_timeout = min(timeout * 0.5, 120.0)
         logger.info(f"ExternalValidationClient initialized with API URL: {self.api_base_url}")
-        logger.info(f"Timeout config - connect: 10s, read: {timeout}s, write: 30s, pool: 60s")
+        logger.info(f"Timeout config - connect: 10s, read: {timeout}s, write: {write_timeout}s, pool: 60s")
     
     async def validate_combined(self, contact_id: int, user_id: Optional[str] = None, user_name: Optional[str] = None) -> Result[Dict[str, Any]]:
         """
@@ -72,6 +73,7 @@ class ExternalValidationClient:
                 )
                 
                 logger.info(f"Calling external validation API for contact {contact_id} (attempt {attempt}/{max_retries})")
+                logger.info(f"Using timeout configuration: read={self.timeout}s, connect=10s, write=30s, pool=60s")
                 response = await self.client.post(url, json=payload.dict())
                 
                 if response.status_code == 200:
