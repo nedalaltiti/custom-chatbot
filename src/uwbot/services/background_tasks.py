@@ -135,11 +135,7 @@ class BackgroundTaskService:
             # Wait for the specified delay
             await asyncio.sleep(delay_minutes * 60)
             
-            # Schedule feedback card if user is still inactive
-            self.feedback_service.schedule_feedback_for_user(
-                user_id=user_id,
-                timeout_minutes=delay_minutes
-            )
+            logger.debug(f"Background task: tracking feedback card for user {user_id} after {delay_minutes}min delay")
             
             # Track the mapping between Teams activity and database message
             self.feedback_service.activity_to_message_id[teams_activity_id] = bot_message_id

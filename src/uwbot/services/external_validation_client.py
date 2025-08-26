@@ -6,6 +6,7 @@ It provides a clean interface for validation requests while delegating the actua
 validation logic to an external service.
 """
 
+import asyncio
 import logging
 import httpx
 from typing import Optional, Dict, Any
@@ -38,7 +39,7 @@ class ExternalValidationClient:
     
     async def validate_combined(self, contact_id: int, user_id: Optional[str] = None, user_name: Optional[str] = None) -> Result[Dict[str, Any]]:
         """
-        Perform combined validation using external API.
+        Perform combined validation using external API with retry logic.
         
         Args:
             contact_id: The contact ID to validate
@@ -48,42 +49,87 @@ class ExternalValidationClient:
         Returns:
             Result containing validation response
         """
-        try:
-            url = f"{self.api_base_url}/api/validation/combined"
-            payload = ValidationRequest(
-                contact_id=contact_id,
-                user_id=user_id,
-                user_name=user_name
-            )
-            
-            logger.info(f"Calling external validation API for contact {contact_id}")
-            response = await self.client.post(url, json=payload.dict())
-            
-            if response.status_code == 200:
-                result = response.json()
-                logger.info(f"External validation successful for contact {contact_id}")
-                return Success(result)
-            elif response.status_code == 422:
-                error_msg = f"Invalid contact ID: {contact_id}"
-                logger.warning(f"External validation failed - invalid contact ID: {contact_id}")
-                return Error(error_msg)
-            else:
-                error_msg = f"External API error: {response.status_code} - {response.text}"
-                logger.error(f"External validation API error: {response.status_code} - {response.text}")
-                return Error(error_msg)
+        max_retries = 3
+        base_delay = 1.0  # seconds
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                url = f"{self.api_base_url}/api/validation/combined"
+                payload = ValidationRequest(
+                    contact_id=contact_id,
+                    user_id=user_id,
+                    user_name=user_name
+                )
                 
-        except httpx.TimeoutException:
-            error_msg = f"External validation API timeout after {self.timeout}s"
-            logger.error(error_msg)
-            return Error(error_msg)
-        except httpx.ConnectError:
-            error_msg = "Failed to connect to external validation API"
-            logger.error(error_msg)
-            return Error(error_msg)
-        except Exception as e:
-            error_msg = f"Unexpected error calling external validation API: {str(e)}"
-            logger.error(error_msg)
-            return Error(error_msg)
+                logger.info(f"Calling external validation API for contact {contact_id} (attempt {attempt}/{max_retries})")
+                response = await self.client.post(url, json=payload.dict())
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.info(f"External validation successful for contact {contact_id}")
+                    return Success(result)
+                elif response.status_code == 422:
+                    error_msg = f"Invalid contact ID: {contact_id}"
+                    logger.warning(f"External validation failed - invalid contact ID: {contact_id}")
+                    return Error(error_msg)
+                elif response.status_code in [502, 503, 504]:  # Server errors - retry
+                    error_msg = f"Server error: {response.status_code} - {response.text[:200]}"
+                    logger.warning(f"External validation server error (attempt {attempt}/{max_retries}): {error_msg}")
+                    
+                    if attempt < max_retries:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        logger.info(f"Retrying in {delay:.1f}s...")
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f"External validation failed after {max_retries} attempts: {error_msg}")
+                        return Error(f"External API error: {error_msg}")
+                else:
+                    error_msg = f"External API error: {response.status_code} - {response.text[:200]}"
+                    logger.error(f"External validation API error: {response.status_code} - {response.text}")
+                    return Error(error_msg)
+                    
+            except httpx.TimeoutException:
+                error_msg = f"External validation API timeout after {self.timeout}s"
+                logger.warning(f"Timeout on attempt {attempt}/{max_retries}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.info(f"Retrying in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"External validation failed after {max_retries} timeout attempts")
+                    return Error(error_msg)
+                    
+            except httpx.ConnectError:
+                error_msg = "Failed to connect to external validation API"
+                logger.warning(f"Connection error on attempt {attempt}/{max_retries}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.info(f"Retrying in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"External validation failed after {max_retries} connection attempts")
+                    return Error(error_msg)
+                    
+            except Exception as e:
+                error_msg = f"Unexpected error calling external validation API: {str(e)}"
+                logger.error(f"Unexpected error on attempt {attempt}/{max_retries}: {error_msg}")
+                
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.info(f"Retrying in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"External validation failed after {max_retries} attempts with unexpected errors")
+                    return Error(error_msg)
+        
+        # This should never be reached due to the loop structure
+        return Error("Unexpected error in retry logic")
     
     
     async def get_contact_data(self, contact_id: int) -> Result[Dict[str, Any]]:
