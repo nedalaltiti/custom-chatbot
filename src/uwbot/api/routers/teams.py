@@ -88,6 +88,27 @@ def extract_contact_id_from_message(message: str) -> Optional[int]:
     
     return None
 
+async def _clear_user_session(user_id: str, feedback_card_tracker) -> None:
+    """
+    Clear user session and clean up tracking data.
+    
+    Args:
+        user_id: User identifier
+        feedback_card_tracker: Feedback card tracker instance
+    """
+    try:
+        # End the session using hybrid session tracker
+        await hybrid_session_tracker.end_session(user_id)
+        
+        # Clean up feedback card tracking for this user
+        if hasattr(feedback_card_tracker, 'cleanup_user_tracking'):
+            feedback_card_tracker.cleanup_user_tracking(user_id)
+        
+        logger.info(f"Successfully cleared session and tracking data for user {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Error clearing session for user {user_id}: {e}")
+
 @router.post("/")
 async def teams_messages(
     req: TeamsMessageRequest, 
