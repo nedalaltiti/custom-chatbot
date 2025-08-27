@@ -28,7 +28,7 @@ def create_welcome_card(user_name: str = "there") -> dict:
             {
                 "type": "TextBlock",
                 "text": (
-                    "I'm your Validation Assistant 👋. I can help you check if contacts have hardship validation data and analyze their financial hardship claims."
+                    "I'm your Underwriting Assistant! Please provide a valid **contact ID** in the **Underwriting Stage**."
                 ),
                 "wrap": True,
                 "spacing": "Medium",

@@ -55,21 +55,21 @@ class ValidationResponseFormatter:
     def format_help_message() -> str:
         """Format help message for users."""
         return (
-            "I'm here to help you validate both hardship and budget data.\n"
-            "Please provide a contact ID to check both hardship and budget validation.\n\n"
+            "I'm here to help you with underwriting validation.\n"
+            "Please provide a valid contact ID in the Underwriting Stage to check validation data.\n\n"
         )
     
     @staticmethod
     def format_goodbye_message() -> str:
         """Format goodbye message."""
-        return "You're welcome! I'm glad I could help you with your validation check. Feel free to reach out anytime you need to validate hardship data for other contacts. Have a great day! 👋"
+        return "You're welcome! I'm glad I could help you with your underwriting validation check. Feel free to reach out anytime you need to validate data for other contacts. Have a great day! 👋"
     
     @staticmethod
     def format_debug_help_message() -> str:
         """Format help message for debug endpoint."""
         return (
-            "I'm here to help you check hardship validation data. "
-            "Please provide a contact ID to check if hardship data exists.\n\n"
+            "I'm here to help you check underwriting validation data. "
+            "Please provide a contact ID to check if validation data exists.\n\n"
         )
 
 

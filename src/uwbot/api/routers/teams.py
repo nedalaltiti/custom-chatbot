@@ -385,8 +385,16 @@ async def teams_messages(
                     intent_type = "error"
                 
         except Exception as e:
-            logger.error(f"Error handling invoke request: {e}")
-            return {}
+            logger.error(f"External validation API error: {e}")
+            from uwbot.utils.validation_responses import format_error_response
+            contact_response = format_error_response(contact_id, f"Service temporarily unavailable. Please try again later.", "validation")
+            intent_type = "error"
+            
+            # Schedule analytics for API error (background)
+            _schedule_analytics("validation_error", {
+                "contact_id": contact_id,
+                "error_type": "api_error"
+            })
 
     # Check for pure greetings using message.py utility
     is_pure_greeting_result = is_pure_greeting(user_message)
