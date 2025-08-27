@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from uwbot.services.gemini_service import GeminiService
 from uwbot.services.external_validation_client import ExternalValidationClient
+from uwbot.services.builtin_feedback_service import builtin_feedback_service
 from uwbot.db.session import get_db_session
 from uwbot.config.settings import settings
 
@@ -63,38 +64,6 @@ async def get_combined_validation_uc(
     """Get external validation client for combined validation."""
     return get_external_validation_client()
 
-# Teams feedback handler
-@lru_cache
-def get_feedback_service():
-    """Get shared feedback service singleton."""
-    from uwbot.services.feedback_service import FeedbackService
-    return FeedbackService()  # This will now return the singleton instance
-
-@lru_cache
-def get_teams_feedback_handler():
-    """Get teams feedback handler singleton."""
-    from uwbot.services.teams_feedback_handler import TeamsFeedbackHandler
-    
-    feedback_service = get_feedback_service()
-    return TeamsFeedbackHandler(feedback_service)
-
-# Card action handler
-@lru_cache
-def get_card_action_handler():
-    """Get card action handler singleton."""
-    from uwbot.services.card_action_handler import CardActionHandler
-    from uwbot.infrastructure.teams_adapter import TeamsAdapter
-    
-    feedback_service = get_feedback_service()
-    teams_adapter = TeamsAdapter()
-    return CardActionHandler(feedback_service, teams_adapter)
-
-# Feedback card tracker
-@lru_cache
-def get_feedback_card_tracker():
-    """Get feedback card tracker singleton."""
-    from uwbot.services.feedback_card_tracker import FeedbackCardTracker
-    from uwbot.infrastructure.teams_adapter import TeamsAdapter
-    
-    teams_adapter = TeamsAdapter()
-    return FeedbackCardTracker(teams_adapter)
+def get_builtin_feedback_service():
+    """Get the builtin feedback service for Teams like/dislike storage."""
+    return builtin_feedback_service

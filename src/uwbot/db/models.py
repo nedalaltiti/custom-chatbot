@@ -75,8 +75,6 @@ class UserSession:
     env = Column(String(32), nullable=False)
     
     # Session state flags
-    awaiting_feedback = Column(Boolean, default=False, nullable=False)
-    feedback_shown = Column(Boolean, default=False, nullable=False)
     greeting_shown = Column(Boolean, default=False, nullable=False)
     session_started = Column(Boolean, default=True, nullable=False)
     is_first_time_user = Column(Boolean, default=True, nullable=False)
@@ -100,7 +98,7 @@ class UserActivity:
     bot_name = Column(String(128), nullable=False)
     env = Column(String(32), nullable=False)
     
-    activity_type = Column(String(32), nullable=False)  # message, card_action, feedback
+    activity_type = Column(String(32), nullable=False)  # message, card_action
     timestamp = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
     
     # Optional state data

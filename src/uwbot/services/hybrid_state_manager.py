@@ -48,8 +48,6 @@ class InMemoryStateManager:
             return UserState(
                 user_id=user_id,
                 session_id=state_dict.get("session_id", str(uuid4())),
-                awaiting_feedback=state_dict.get("awaiting_feedback", False),
-                feedback_shown=state_dict.get("feedback_shown", False),
                 greeting_shown=state_dict.get("greeting_shown", False),
                 session_started=state_dict.get("session_started", True),
                 is_first_time_user=user_id in self.first_time_users,
@@ -73,8 +71,6 @@ class InMemoryStateManager:
         
         self.user_states[user_id] = {
             "session_id": session_id,
-            "awaiting_feedback": False,
-            "feedback_shown": False,
             "greeting_shown": False,
             "session_started": True,
             "last_bot_response_time": None,

@@ -7,7 +7,7 @@ from uwbot.utils.result import Result
 
 __all__ = ["classify_intent"]
 
-async def classify_intent(message: str) -> str:
+def classify_intent(message: str) -> str:
     """
     Classify the intent of a user message using keyword matching.
     

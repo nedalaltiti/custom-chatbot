@@ -35,8 +35,7 @@ class UserState:
         self,
         user_id: str,
         session_id: str,
-        awaiting_feedback: bool = False,
-        feedback_shown: bool = False,
+
         greeting_shown: bool = False,
         session_started: bool = True,
         is_first_time_user: bool = True,
@@ -45,8 +44,7 @@ class UserState:
     ):
         self.user_id = user_id
         self.session_id = session_id
-        self.awaiting_feedback = awaiting_feedback
-        self.feedback_shown = feedback_shown
+
         self.greeting_shown = greeting_shown
         self.session_started = session_started
         self.is_first_time_user = is_first_time_user
@@ -57,8 +55,7 @@ class UserState:
         """Convert to dictionary for backward compatibility."""
         return {
             "session_id": self.session_id,
-            "awaiting_feedback": self.awaiting_feedback,
-            "feedback_shown": self.feedback_shown,
+
             "greeting_shown": self.greeting_shown,
             "session_started": self.session_started,
             "last_bot_response_time": self.last_bot_response_time,
@@ -116,8 +113,7 @@ class DatabaseStateManager:
                 return UserState(
                     user_id=db_session.user_id,
                     session_id=db_session.session_id,
-                    awaiting_feedback=db_session.awaiting_feedback,
-                    feedback_shown=db_session.feedback_shown,
+
                     greeting_shown=db_session.greeting_shown,
                     session_started=db_session.session_started,
                     is_first_time_user=db_session.is_first_time_user,
@@ -157,8 +153,7 @@ class DatabaseStateManager:
                     bot_name=self.bot_name,
                     env=self.env,
                     is_first_time_user=is_first_time_user,
-                    awaiting_feedback=False,
-                    feedback_shown=False,
+
                     greeting_shown=False,
                     session_started=True,
                     created_at=datetime.now(timezone.utc).replace(tzinfo=None),
@@ -277,12 +272,12 @@ class DatabaseStateManager:
         metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        Track user activity for analytics and feedback timing.
+        Track user activity for analytics.
         
         Args:
             user_id: User identifier
             session_id: Session identifier
-            activity_type: Type of activity (message, card_action, feedback)
+            activity_type: Type of activity (message, card_action)
             metadata: Optional activity metadata
             
         Returns:

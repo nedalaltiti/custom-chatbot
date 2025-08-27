@@ -13,7 +13,7 @@ from uuid import uuid4
 from contextlib import asynccontextmanager
 
 from uwbot.services.message_service import MessageService
-from uwbot.services.feedback_service import FeedbackService
+
 from uwbot.config.settings import settings
 from uwbot.utils.bot_name import get_bot_name
 
@@ -25,7 +25,7 @@ class BackgroundTaskService:
     
     def __init__(self):
         self.message_service = MessageService()
-        self.feedback_service = FeedbackService()
+
         self._running_tasks = set()
         logger.info("BackgroundTaskService initialized")
     
@@ -96,54 +96,7 @@ class BackgroundTaskService:
             logger.warning(f"Background message persistence failed: {e}")
             return None
     
-    def schedule_feedback_card_tracking(
-        self,
-        user_id: str,
-        teams_activity_id: str,
-        bot_message_id: int,
-        delay_minutes: int = 10
-    ) -> asyncio.Task:
-        """
-        Schedule feedback card tracking as a background task.
-        
-        Args:
-            user_id: User identifier
-            teams_activity_id: Teams activity ID for the bot response
-            bot_message_id: Database ID of the bot message
-            delay_minutes: Minutes to wait before sending feedback card
-        """
-        task = asyncio.create_task(
-            self._track_feedback_card(
-                user_id=user_id,
-                teams_activity_id=teams_activity_id,
-                bot_message_id=bot_message_id,
-                delay_minutes=delay_minutes
-            )
-        )
-        self._track_task(task)
-        return task
-    
-    async def _track_feedback_card(
-        self,
-        user_id: str,
-        teams_activity_id: str,
-        bot_message_id: int,
-        delay_minutes: int
-    ) -> None:
-        """Internal method to handle feedback card tracking."""
-        try:
-            # Wait for the specified delay
-            await asyncio.sleep(delay_minutes * 60)
-            
-            logger.debug(f"Background task: tracking feedback card for user {user_id} after {delay_minutes}min delay")
-            
-            # Track the mapping between Teams activity and database message
-            self.feedback_service.activity_to_message_id[teams_activity_id] = bot_message_id
-            
-            logger.debug(f"Background task: scheduled feedback tracking for user {user_id}")
-            
-        except Exception as e:
-            logger.warning(f"Background feedback tracking failed: {e}")
+    # Feedback tracking functionality has been removed
     
     def schedule_analytics_logging(
         self,

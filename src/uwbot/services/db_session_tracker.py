@@ -110,7 +110,7 @@ class DatabaseSessionTracker:
     
     async def end_session(self, user_id: str) -> None:
         """
-        Explicitly close the session (called when feedback is submitted).
+        Explicitly close the session (called when session ends).
         
         Args:
             user_id: User identifier

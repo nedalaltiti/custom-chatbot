@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from uwbot.api.routers import admin, feedback, health, teams, debug
+from uwbot.api.routers import admin, health, teams, debug
 from uwbot.config.settings import settings
 from uwbot.utils.error import BaseError, ErrorSeverity
 from uwbot.config.app_config import get_app_config
@@ -163,7 +163,6 @@ if settings.cors_origins:   # don't enable CORS unless explicitly configured
 
 app.include_router(health.router, prefix="/health", tags=["health"])
 app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
-app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(admin.router,  prefix="/api/admin", tags=["admin"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 
@@ -177,7 +176,6 @@ async def root():
         "endpoints": {
             "health": "/health",
             "teams": "/api/messages",
-            "feedback": "/api/feedback",
             "admin": "/api/admin",
             "debug": "/api/debug"
         },

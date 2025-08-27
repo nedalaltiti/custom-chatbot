@@ -92,7 +92,13 @@ async def get_db_session_context() -> AsyncGenerator[SQLAlchemyAsyncSession, Non
             await session.commit()
         except SQLAlchemyError as e:
             await session.rollback()
-            logger.error(f"Database error in service context: {e}")
+            # Check for read-only transaction error and log it verbosely
+            if "ReadOnlySQLTransactionError" in str(type(e)) or "read-only transaction" in str(e).lower():
+                logger.error(f"READ-ONLY DATABASE DETECTED: {e}")
+                logger.error("This indicates the database connection is in read-only mode")
+                logger.error("The application will continue but database writes will be disabled")
+            else:
+                logger.error(f"Database error in service context: {e}")
             raise
         except Exception as e:
             await session.rollback()
