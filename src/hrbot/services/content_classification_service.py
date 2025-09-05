@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 from hrbot.services.gemini_service import GeminiService
+from hrbot.config.settings import settings
 from hrbot.config.app_config import get_current_app_config
 import asyncio
 
@@ -67,6 +68,9 @@ class ContentClassificationService:
         Returns:
             ConversationAnalysis with smart feedback determination
         """
+        # Fast path: honor performance setting to skip LLM classification entirely
+        if not settings.performance.use_intent_classification:
+            return self._get_keyword_based_analysis(user_message)
         try:
             # Special handling for NOI and informational responses
             if response_type == "noi":
@@ -266,10 +270,7 @@ Analyze the message:"""
     
     def get_response_message(self, analysis: ConversationAnalysis) -> Optional[str]:
         """
-        Get appropriate RAW response message based on flow analysis.
-        
-        Note: These responses will be formatted by the smart response formatter,
-        so they should NOT include closing questions or redundant formatting.
+        Get appropriate response message based on flow analysis.
         """
         
         if analysis.flow_type == ConversationFlow.END_SAFETY_INTERVENTION:
@@ -312,11 +313,6 @@ Analyze the message:"""
             if self.app_config.instance_id == "jo":
                 # Jordan-specific guidance
                 crisis_guidance = (
-                    "• **Immediate Assistance:**\n"
-                    "If you are in immediate danger, please call emergency services or go to the nearest hospital.\n\n"
-                    "• **Mental Health Support:**\n"
-                    "Reach out to a crisis hotline or mental health professional for help.\n"
-                    "Contact local emergency services (911) or mental health professionals in Jordan.\n\n"
                     "• **Workplace Support:**\n"
                     f"For work-related support, you can contact our HR team: {self.app_config.hr_support_url}\n\n"
                     "Please prioritize your safety and reach out to qualified mental health professionals."
@@ -325,11 +321,6 @@ Analyze the message:"""
             elif self.app_config.instance_id == "us":
                 # US-specific guidance with correct numbers
                 crisis_guidance = (
-                    "• **Immediate Assistance:**\n"
-                    "If you are in immediate danger, please call emergency services (911) or go to the nearest hospital.\n\n"
-                    "• **Mental Health Support:**\n"
-                    "Reach out to a crisis hotline or mental health professional for help.\n"
-                    "Suicide & Crisis Lifeline: Call or text 988. Available 24/7, free, and confidential.\n\n"
                     "• **Workplace Support:**\n"
                     f"For work-related support, you can contact our HR team: {self.app_config.hr_support_url}\n\n"
                     "Please prioritize your safety and reach out to qualified mental health professionals."
@@ -338,10 +329,6 @@ Analyze the message:"""
             else:
                 # Generic guidance for other regions
                 crisis_guidance = (
-                    "• **Immediate Assistance:**\n"
-                    "If you are in immediate danger, please call your local emergency services or go to the nearest hospital.\n\n"
-                    "• **Mental Health Support:**\n"
-                    "Reach out to a crisis hotline or mental health professional in your area for help.\n\n"
                     "• **Workplace Support:**\n"
                     f"For work-related support, you can contact our HR team: {self.app_config.hr_support_url}\n\n"
                     "Please prioritize your safety and reach out to qualified mental health professionals."
@@ -353,20 +340,12 @@ Analyze the message:"""
             logger.error(f"Error generating crisis response: {e}")
             # Fallback to safe generic message
             return (
-                "I'm concerned about your message. If you're experiencing thoughts of self-harm, "
-                "please reach out to a mental health professional or local emergency services immediately. "
+                "I'm concerned about your message. "
                 f"For workplace support, you can contact our HR team: {self.app_config.hr_support_url}"
             )
     
     def should_end_conversation(self, analysis: ConversationAnalysis) -> bool:
         """Return *True* only when we are highly confident the user is ending.
-
-        Rules
-        -----
-        • **END_NATURAL / END_SATISFIED** ⇒ end only when confidence ≥ 0.8
-        • **END_VIOLATION** ⇒ we *never* auto-end; we give guidance but keep
-          the thread open in case the user wants to clarify.
-        • Safety-intervention and informational/redirect cases never end.
         """
 
         if analysis.flow_type in {ConversationFlow.END_NATURAL, ConversationFlow.END_SATISFIED}:

@@ -38,43 +38,9 @@ pipelines:
                     }
                   }' \
               https://api.bitbucket.org/2.0/repositories/wuduh/$PROD_DEPLOYMENT_REPO/pipelines/
-    stg:
-      - step:
-          name: Build Docker Image (Dev)
-          image: tstrohmeier/awscli:3.8.3
-          script:
-            - echo "Logging into AWS ECR..."
-            - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-            - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-            - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
-            - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
-            - echo "Building docker image.."
-            - docker build --no-cache -t $IMAGE_FULL_STG .
-            - echo "Pushing docker image to AWS ECR..."
-            - docker push $IMAGE_FULL_STG
-      - step:
-          name: Trigger Deployment Pipeline
-          image: curlimages/curl
-          script:
-            - echo "Triggering pipeline in another repository..."
-            - |
-              curl -X POST -u leen.a:$APP_PASSWORD \
-              -H "Content-Type: application/json" \
-              -d '{
-                    "target": {
-                      "type": "pipeline_ref_target",
-                      "ref_type": "branch",
-                      "ref_name": "main",
-                      "selector": {
-                        "type": "custom",
-                        "pattern": "deployment"
-                      }
-                    }
-                  }' \
-              https://api.bitbucket.org/2.0/repositories/wuduh/$STG_DEPLOYMENT_REPO/pipelines/
     dev:
       - step:
-          name: Build Docker Image (Dev)
+          name: Build Docker Images (Dev)
           image: tstrohmeier/awscli:3.8.3
           script:
             - echo "Logging into AWS ECR..."
@@ -82,10 +48,16 @@ pipelines:
             - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
             - export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
             - aws ecr get-login-password --region us-west-1 | docker login --username AWS --password-stdin 794038237159.dkr.ecr.us-west-1.amazonaws.com
-            - echo "Building docker image.."
+            - echo "Building HRBot docker image.."
+            # - docker build --no-cache --build-arg APP_USER=hrbot -t $IMAGE_FULL_DEV .
             - docker build --no-cache -t $IMAGE_FULL_DEV .
-            - echo "Pushing docker image to AWS ECR..."
+            - echo "Pushing HRBot docker image to AWS ECR..."
             - docker push $IMAGE_FULL_DEV
+            - echo "Building UWBot docker image.."
+            # - docker build --no-cache --build-arg APP_USER=uwbot -t $UWBOT_IMAGE_FULL_DEV .
+            # - echo "Pushing UWBot docker image to AWS ECR..."
+            # - docker push $UWBOT_IMAGE_FULL_DEV
+  
       - step:
           name: Trigger Deployment Pipeline
           image: curlimages/curl

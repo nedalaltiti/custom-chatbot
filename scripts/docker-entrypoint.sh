@@ -2,7 +2,7 @@
 set -e
 
 # Function to detect and fix AWS credentials format
-fix_aws_credentials() {
+aws_credentials() {
     echo "[ENTRYPOINT] Checking AWS credentials format..."
     
     # Check if AWS_SECRET_ACCESS_KEY looks like base64
@@ -34,7 +34,7 @@ echo "[ENTRYPOINT] SKIP_DB_INIT: ${SKIP_DB_INIT}"
 
 # Fix AWS credentials if needed
 if [[ "${USE_AWS_SECRETS}" == "true" ]]; then
-    fix_aws_credentials
+    aws_credentials
 fi
 
 # Load instance-specific environment file if it exists
@@ -84,8 +84,27 @@ mkdir -p /app/data/prompts/{jo,us}
 
 # Launch the application
 echo "[ENTRYPOINT] Launching application on port ${PORT}"
-exec python -m uvicorn hrbot.api.app:app \
-    --host "${HOST}" \
-    --port "${PORT}" \
-    --workers 1 \
-    --log-config /app/logging.yaml 2>&1 | tee -a /app/logs/app.log
+
+# Determine which application to run based on APP_TYPE or APP_INSTANCE
+# if [[ "${APP_TYPE}" == "uwbot" ]]; then
+#     echo "[ENTRYPOINT] Starting UWBot application..."
+#     exec python -m uvicorn uwbot.api.app:app \
+#         --host "${HOST}" \
+#         --port "${PORT}" \
+#         --workers 1 2>&1 | tee -a /app/logs/app.log
+# elif [[ "${APP_TYPE}" == "hrbot" ]]; then
+#     echo "[ENTRYPOINT] Starting HRBot application..."
+#     exec python -m uvicorn hrbot.api.app:app \
+#         --host "${HOST}" \
+#         --port "${PORT}" \
+#         --workers 1 2>&1 | tee -a /app/logs/app.log
+# elif [[ -n "${APP_INSTANCE}" ]]; then
+#     echo "[ENTRYPOINT] Starting HRBot application (instance: ${APP_INSTANCE})..."
+#     exec python -m uvicorn hrbot.api.app:app \
+#         --host "${HOST}" \
+#         --port "${PORT}" \
+#         --workers 1 2>&1 | tee -a /app/logs/app.log
+# else
+#     echo "[ENTRYPOINT] ERROR: Unknown APP_TYPE: ${APP_TYPE}. Expected 'hrbot' or 'uwbot'"
+#     exit 1
+# fi

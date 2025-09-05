@@ -112,6 +112,14 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"Error during app instance detection: {e}")
         logger.info("Continuing with default configuration")
 
+    # Prime feedback service singleton
+    try:
+        from hrbot.services.feedback_service import get_feedback_service
+        _ = get_feedback_service()
+        logger.info("Feedback service initialised")
+    except Exception as e:
+        logger.warning(f"Feedback service init failed (non-fatal): {e}")
+
     logger.info("✅  Startup complete")
     try:
         yield
@@ -127,6 +135,14 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as e:
                 logger.warning(f"Failed to cleanup temporary credentials: {e}")
         
+        # Clean up feedback service
+        try:
+            from hrbot.services.feedback_service import get_feedback_service
+            svc = get_feedback_service()
+            await svc.shutdown()
+        except Exception as e:
+            logger.warning(f"Feedback service shutdown failed: {e}")
+
         # Clean up database connections
         try:
             from hrbot.db.session import close_database
@@ -179,6 +195,23 @@ app.include_router(teams.router,  prefix="/api/messages", tags=["teams"])
 app.include_router(feedback.router, prefix="/api/feedback", tags=["feedback"])
 app.include_router(admin.router,  prefix="/api/admin", tags=["admin"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
+
+@app.get("/")
+async def root():
+    """Root endpoint for health checks and basic info."""
+    return {
+        "service": "HR Teams Bot",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "health": "/health",
+            "teams": "/api/messages",
+            "feedback": "/api/feedback",
+            "admin": "/api/admin",
+            "debug": "/api/debug"
+        },
+        "documentation": "/docs" if settings.debug else "disabled in production"
+    }
 
 @app.exception_handler(BaseError)
 async def hrbot_error_handler(_: Request, exc: BaseError) -> JSONResponse:

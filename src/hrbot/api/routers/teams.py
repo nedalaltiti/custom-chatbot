@@ -1,7 +1,7 @@
 # hrbot/api/routers/teams.py
 
 from fastapi import APIRouter, BackgroundTasks
-from hrbot.services.feedback_service import FeedbackService
+from hrbot.services.feedback_service import get_feedback_service
 from hrbot.services.message_service import MessageService
 from hrbot.infrastructure.teams_adapter import TeamsAdapter
 from hrbot.schemas.models import TeamsMessageRequest, TeamsActivityResponse
@@ -18,21 +18,26 @@ import logging, re
 from datetime import datetime
 from pydantic import BaseModel
 import time
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 router           = APIRouter()
 adapter          = TeamsAdapter()
-feedback_service = FeedbackService()
+feedback_service = get_feedback_service()
 chat_processor   = ChatProcessor()
 message_service  = MessageService()
 noi_checker      = NOIAccessChecker()  # Initialize NOI access checker
 
-# in-memory state
+# in-memory state with improved thread safety
 first_time_users = set()    # user_ids pending their first greeting
 user_states      = {}       # user_id → {awaiting_confirmation, feedback_shown, use_streaming, last_bot_response_time}
 user_memories    = {}       # user_id → ConversationBufferMemory
 feedback_cards   = {}       # conv_id → AdaptiveCard activity_id
+
+# Message deduplication to prevent duplicate processing
+processed_messages = {}  # message_id → timestamp
+message_lock = asyncio.Lock()  # Thread-safe lock for state operations
 
 # Pattern to detect if response already contains the "anything else" question
 _HAS_ANYTHING_ELSE_RE = re.compile(
@@ -55,9 +60,111 @@ class ConversationBufferMemory:
 
 
 async def get_or_create_memory(user_id: str) -> ConversationBufferMemory:
-    if user_id not in user_memories:
-        user_memories[user_id] = ConversationBufferMemory()
-    return user_memories[user_id]
+    async with message_lock:
+        if user_id not in user_memories:
+            user_memories[user_id] = ConversationBufferMemory()
+        return user_memories[user_id]
+
+
+async def _is_duplicate_message(message_id: str, user_id: str, user_message: str) -> bool:
+    """Check if this message has already been processed to prevent duplicates."""
+    global processed_messages
+    
+    if not message_id:
+        return False
+        
+    async with message_lock:
+        # Clean up old entries (older than 5 minutes)
+        current_time = time.time()
+        processed_messages = {k: v for k, v in processed_messages.items() 
+                            if current_time - v < 300}  # 5 minutes
+        
+        # Check if message was already processed
+        if message_id in processed_messages:
+            logger.warning(f"Duplicate message detected: {message_id} for user {user_id}")
+            return True
+            
+        # Store this message as processed
+        processed_messages[message_id] = current_time
+        return False
+
+
+async def _get_or_create_user_state(user_id: str) -> dict:
+    """Thread-safe way to get or create user state."""
+    async with message_lock:
+        if user_id not in user_states:
+            logger.info(f"Creating new session for user {user_id} - first message ever")
+            state = {
+                "awaiting_more_help": False,
+                "awaiting_feedback": False,
+                "feedback_shown": False,
+                "use_streaming": True,
+                "session_id": session_tracker.get(user_id),
+                "greeting_shown": False,
+                "last_bot_response_time": None,
+                "session_started": True,
+                "last_message_id": None,  # Track last processed message
+            }
+            user_states[user_id] = state
+            first_time_users.add(user_id)
+            logger.info(f"Added user {user_id} to first_time_users set")
+        else:
+            state = user_states[user_id]
+            # If the previous session was ended, rebuild essentials for new session
+            if "session_id" not in state:
+                logger.info(f"Rebuilding session for returning user {user_id} - session was cleared, this is a NEW session")
+                state["session_id"] = session_tracker.get(user_id)
+                # Clear any residual memory from previous session to prevent context pollution
+                user_memories.pop(user_id, None)
+                # Reset greeting shown flag for new session
+                state["greeting_shown"] = False
+                state["session_started"] = True
+                state["last_message_id"] = None
+                logger.info(f"Reset greeting_shown=False for user {user_id} - new session after previous ended")
+            else:
+                # Continuing existing session
+                state.setdefault("session_started", False)
+                
+            state.setdefault("awaiting_more_help", False)
+            state.setdefault("awaiting_feedback", False)
+            state.setdefault("feedback_shown", False)
+            state.setdefault("use_streaming", True)
+            state.setdefault("greeting_shown", False)
+            state.setdefault("last_bot_response_time", None)
+            state.setdefault("last_message_id", None)
+            
+        return state
+
+
+async def _update_user_state(user_id: str, updates: dict):
+    """Thread-safe way to update user state."""
+    async with message_lock:
+        if user_id in user_states:
+            user_states[user_id].update(updates)
+
+
+async def _ensure_user_message_saved(user_message: str, user_id: str, session_id: str, reply_to_id: str = None) -> int:
+    """
+    Ensure user message is saved to both memory and database.
+    Returns the message ID.
+    """
+    # Save to memory
+    memory = await get_or_create_memory(user_id)
+    memory.add_user_message(user_message)
+    
+    # Save to database
+    user_msg_id = await message_service.add_message(
+        bot_name   = get_bot_name(),
+        env        = "development",
+        channel    = "teams",
+        user_id    = user_id,
+        session_id = session_id,
+        role       = "user",
+        text       = user_message,
+        reply_to_id= reply_to_id,
+    )
+    
+    return user_msg_id
 
 
 async def _handle_conversation_ending(
@@ -102,35 +209,42 @@ async def _handle_conversation_ending(
         act_id = await feedback_service.send_feedback_prompt(service_url, conv_id)
         if act_id:
             feedback_cards[conv_id] = act_id
-            state["awaiting_feedback"] = True
-            state["feedback_shown"] = True
+            await _update_user_state(user_id, {"awaiting_feedback": True, "feedback_shown": True})
     
     # Clear session for ending scenarios
-    _clear_user_session(user_id)
+    await _clear_user_session(user_id)
 
 
-async def _ensure_user_message_saved(user_message: str, user_id: str, session_id: str, reply_to_id: str = None) -> int:
-    """
-    Ensure user message is saved to both memory and database.
-    Returns the message ID.
-    """
-    # Save to memory
-    memory = await get_or_create_memory(user_id)
-    memory.add_user_message(user_message)
+async def _clear_user_session(user_id: str):
+    """Clear per-user memory, state, and feedback tracking.
     
-    # Save to database
-    user_msg_id = await message_service.add_message(
-        bot_name   = get_bot_name(),
-        env        = "development",
-        channel    = "teams",
-        user_id    = user_id,
-        session_id = session_id,
-        role       = "user",
-        text       = user_message,
-        reply_to_id= reply_to_id,
-    )
+    This completely resets the user's session so that their next message
+    will be treated as starting a new session.
+    """
     
-    return user_msg_id
+    async with message_lock:
+        # Clear in-memory conversation data
+        mem = user_memories.pop(user_id, None)
+        old_state = user_states.pop(user_id, None)  # This is the key - removes session_id 
+        first_time_users.discard(user_id)  # They're no longer "first time" but can get greeting cards in new sessions
+        
+        # Clear feedback cards tracking for this user's conversations
+        feedback_cards.pop(user_id, None)
+        
+        # Clear feedback service session data
+        feedback_service.clear_user_session(user_id)
+        
+        # Log detailed session cleanup for debugging
+        message_count = len(mem.messages) if mem and mem.messages else 0
+        had_greeting = old_state.get("greeting_shown", False) if old_state else False
+        logger.info(f"🧹 CLEARED session for user {user_id}:")
+        logger.info(f"   • {message_count} messages in memory")
+        logger.info(f"   • greeting_shown was: {had_greeting}")
+        logger.info(f"   • Next greeting will trigger NEW SESSION and greeting card")
+        logger.info(f"   • Removed from first_time_users: {user_id in first_time_users}")
+        
+        # Ensure the user is completely removed from session tracking so next message starts fresh
+        # This makes the next message go through the "state is None" or "session_id not in state" logic
 
 
 @router.post("/")
@@ -143,6 +257,15 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
     conv_id      = req.conversation.id
     message_id   = req.reply_to_id 
 
+    # Check for duplicate messages to prevent processing the same message multiple times
+    if req.activity_id:  # Teams message ID for deduplication
+        if await _is_duplicate_message(req.activity_id, user_id, user_message):
+            logger.info(f"Skipping duplicate message {req.activity_id} for user {user_id}")
+            return TeamsActivityResponse(text="")
+    
+    # Update last message ID in state
+    await _update_user_state(user_id, {"last_message_id": req.activity_id})
+    
     if user_message.strip():  # Only track if user sent actual message
         feedback_service.track_user_activity(user_id)
 
@@ -153,44 +276,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         except Exception as e:
             logger.warning(f"Failed to send typing indicator: {e}")
     
-    state = user_states.get(user_id)
-    if state is None:                        # first ever message from this user
-        logger.info(f"Creating new session for user {user_id} - first message ever")
-        state = {
-            "awaiting_more_help": False,     # Waiting for yes/no to "anything else?"
-            "awaiting_feedback":  False,
-            "feedback_shown":     False,
-            "use_streaming":      True,
-            "session_id":         session_tracker.get(user_id),
-            "greeting_shown":     False,     # Track if greeting card has been shown in this session   
-            "last_bot_response_time": None,  # Track when bot last responded
-            "session_started":    True,      # Mark this as a new session start
-        }
-        user_states[user_id] = state          
-        first_time_users.add(user_id)
-        logger.info(f"Added user {user_id} to first_time_users set")
-    else:
-        # If the previous session was ended, rebuild essentials for new session
-        if "session_id" not in state:
-            logger.info(f"Rebuilding session for returning user {user_id} - session was cleared, this is a NEW session")
-            state["session_id"] = session_tracker.get(user_id)
-            # Clear any residual memory from previous session to prevent context pollution
-            user_memories.pop(user_id, None)
-            # Reset greeting shown flag for new session - this is key!
-            state["greeting_shown"] = False
-            state["session_started"] = True  # Mark this as a new session start
-            logger.info(f"Reset greeting_shown=False for user {user_id} - new session after previous ended")
-        else:
-            # Continuing existing session
-            state.setdefault("session_started", False)
-            
-        state.setdefault("awaiting_more_help", False)
-        state.setdefault("awaiting_feedback", False)
-        state.setdefault("feedback_shown", False)
-        state.setdefault("use_streaming", True)
-        state.setdefault("greeting_shown", False)
-        state.setdefault("last_bot_response_time", None)
-
+    state = await _get_or_create_user_state(user_id)
     session_id = state["session_id"]
     
     # Get job title for system override
@@ -451,8 +537,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                             feedback_cards[conv_id] = new_act
 
                     # Remember we showed the stars
-                    state["feedback_shown"] = True
-                    state["awaiting_feedback"] = False 
+                    await _update_user_state(user_id, {"feedback_shown": True, "awaiting_feedback": False})
                     
             except Exception as e:
                 logger.error(f"Error processing submit_rating: {e}")
@@ -468,7 +553,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 
                 # Remove current feedback card and end session
                 feedback_cards.pop(conv_id, None)
-                _clear_user_session(user_id)
+                await _clear_user_session(user_id)
                 
             except Exception as e:
                 logger.error(f"Error processing dismiss_feedback: {e}")
@@ -519,11 +604,10 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 if act_id:
                     await adapter.update_card(service_url, conv_id, act_id, submitted_card)
 
-                state["feedback_shown"] = True
-                state["awaiting_feedback"] = False 
+                await _update_user_state(user_id, {"feedback_shown": True, "awaiting_feedback": False})
                 
                 # End session immediately after feedback submission
-                _clear_user_session(user_id)
+                await _clear_user_session(user_id)
                 
             except Exception as e:
                 logger.error(f"Error processing submit_feedback: {e}")
@@ -593,7 +677,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
         if intent == "END":
             # User wants to end the conversation
             logger.info(f"User {user_id} wants to end conversation based on intent detection")
-            state["awaiting_more_help"] = False
+            await _update_user_state(user_id, {"awaiting_more_help": False})
             
             # Save the user's message before ending
             await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
@@ -607,15 +691,14 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             act_id = await feedback_service.send_feedback_prompt(service_url, conv_id)
             if act_id:
                 feedback_cards[conv_id] = act_id
-                state["awaiting_feedback"] = True
-                state["feedback_shown"] = True
+                await _update_user_state(user_id, {"awaiting_feedback": True, "feedback_shown": True})
             
-            _clear_user_session(user_id)
+            await _clear_user_session(user_id)
             return TeamsActivityResponse(text="")
         else:
             # User wants to continue (CONTINUE) - process their message normally
             logger.info(f"User wants to continue conversation: '{user_message}'")
-            state["awaiting_more_help"] = False
+            await _update_user_state(user_id, {"awaiting_more_help": False})
             # Continue processing the message normally below
 
     greet_only, user_payload = split_greeting(user_message)
@@ -642,8 +725,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             await adapter.send_card(service_url, conv_id, card)
             
             # IMPORTANT: Mark greeting as shown immediately to prevent duplicates
-            state["greeting_shown"] = True
-            state["session_started"] = False  # Session officially started now
+            await _update_user_state(user_id, {"greeting_shown": True, "session_started": False})  # Session officially started now
             
             # Remove from first_time_users if present
             first_time_users.discard(user_id)
@@ -851,11 +933,11 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                     memory.add_ai_message(formatted_response)
                     
                     # Update last bot response time
-                    state["last_bot_response_time"] = datetime.utcnow()
+                    await _update_user_state(user_id, {"last_bot_response_time": datetime.utcnow()})
                     
                     # Check if response contains "anything else?" 
                     if _HAS_ANYTHING_ELSE_RE.search(formatted_response):
-                        state["awaiting_more_help"] = True
+                        await _update_user_state(user_id, {"awaiting_more_help": True})
                     
                     # Store in database with appropriate intent
                     intent = classification_service.get_message_intent(analysis)
@@ -865,7 +947,7 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                     # This will be handled after streaming completes
                     if bot_msg_id:
                         # Store the bot message ID temporarily to map later
-                        state["last_bot_message_id"] = bot_msg_id
+                        await _update_user_state(user_id, {"last_bot_message_id": bot_msg_id})
 
             # Start real-time streaming from LLM
             success, activity_id = await adapter.stream_message(
@@ -877,12 +959,13 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             # Track the mapping between Teams activity ID and bot message database ID
             if success and activity_id:
                 # Get the bot message ID that was stored during streaming
-                bot_msg_id = state.get("last_bot_message_id")
+                current_state = await _get_or_create_user_state(user_id)
+                bot_msg_id = current_state.get("last_bot_message_id")
                 if bot_msg_id:
                     feedback_service.track_activity_to_message_mapping(activity_id, bot_msg_id)
                     logger.debug(f"Tracked streaming mapping: Teams activity {activity_id} -> bot message DB ID {bot_msg_id}")
                     # Clean up the temporary storage
-                    state.pop("last_bot_message_id", None)
+                    await _update_user_state(user_id, {"last_bot_message_id": None})
                 else:
                     logger.warning(f"Streaming completed but no bot message ID found for activity {activity_id}")
             elif success:
@@ -899,14 +982,14 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
                 if result.is_success():
                     answer = result.unwrap()["response"].strip()
                     memory.add_ai_message(answer)
-                    state["last_bot_response_time"] = datetime.utcnow()
+                    await _update_user_state(user_id, {"last_bot_response_time": datetime.utcnow()})
                     intent = classification_service.get_message_intent(analysis)
                     
                     # Check if the response already contains "anything else?" question
                     has_anything_else = _HAS_ANYTHING_ELSE_RE.search(answer)
                     if has_anything_else:
                         # Set state to await response
-                        state["awaiting_more_help"] = True
+                        await _update_user_state(user_id, {"awaiting_more_help": True})
                     
                     # Store bot message and get its database ID
                     bot_msg_id = await _persist_bot_msg(user_msg_id, answer, intent)
@@ -937,14 +1020,14 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             if result.is_success():
                 answer = result.unwrap()["response"].strip()
                 memory.add_ai_message(answer)
-                state["last_bot_response_time"] = datetime.utcnow()
+                await _update_user_state(user_id, {"last_bot_response_time": datetime.utcnow()})
                 intent = classification_service.get_message_intent(analysis)
                 
                 # Check if the response already contains "anything else?" question
                 has_anything_else = _HAS_ANYTHING_ELSE_RE.search(answer)
                 if has_anything_else:
                     # Set state to await response
-                    state["awaiting_more_help"] = True
+                    await _update_user_state(user_id, {"awaiting_more_help": True})
 
                 # Store bot message and get its database ID
                 bot_msg_id = await _persist_bot_msg(user_msg_id, answer, intent)
@@ -994,10 +1077,10 @@ async def teams_messages(req: TeamsMessageRequest, background_tasks: BackgroundT
             has_anything_else = _HAS_ANYTHING_ELSE_RE.search(answer)
             if has_anything_else:
                 # Set state to await response
-                state["awaiting_more_help"] = True
+                await _update_user_state(user_id, {"awaiting_more_help": True})
 
             memory.add_ai_message(answer)
-            state["last_bot_response_time"] = datetime.utcnow()
+            await _update_user_state(user_id, {"last_bot_response_time": datetime.utcnow()})
             intent = classification_service.get_message_intent(analysis)
             
             # Store bot message and get its database ID
@@ -1143,33 +1226,3 @@ async def debug_chat(req: DebugChatRequest):
             confidence=0.0,
             processing_time=round(processing_time, 2)
         )
-
-def _clear_user_session(user_id: str):
-    """Clear per-user memory, state, and feedback tracking.
-    
-    This completely resets the user's session so that their next message
-    will be treated as starting a new session.
-    """
-    
-    # Clear in-memory conversation data
-    mem = user_memories.pop(user_id, None)
-    old_state = user_states.pop(user_id, None)  # This is the key - removes session_id 
-    first_time_users.discard(user_id)  # They're no longer "first time" but can get greeting cards in new sessions
-    
-    # Clear feedback cards tracking for this user's conversations
-    feedback_cards.pop(user_id, None)
-    
-    # Clear feedback service session data
-    feedback_service.clear_user_session(user_id)
-    
-    # Log detailed session cleanup for debugging
-    message_count = len(mem.messages) if mem and mem.messages else 0
-    had_greeting = old_state.get("greeting_shown", False) if old_state else False
-    logger.info(f"🧹 CLEARED session for user {user_id}:")
-    logger.info(f"   • {message_count} messages in memory")
-    logger.info(f"   • greeting_shown was: {had_greeting}")
-    logger.info(f"   • Next greeting will trigger NEW SESSION and greeting card")
-    logger.info(f"   • Removed from first_time_users: {user_id in first_time_users}")
-    
-    # Ensure the user is completely removed from session tracking so next message starts fresh
-    # This makes the next message go through the "state is None" or "session_id not in state" logic
