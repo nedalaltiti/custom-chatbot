@@ -324,77 +324,77 @@ async def teams_messages(
         
         return TeamsActivityResponse(text="")
     
-    contact_id = extract_contact_id_from_message(user_message)
+    # contact_id = extract_contact_id_from_message(user_message)
     
-    if contact_id:
-        logger.info(f"Contact query detected for ID: {contact_id}")
+    # if contact_id:
+    #     logger.info(f"Contact query detected for ID: {contact_id}")
         
-        # Schedule analytics logging for validation request (background)
-        _schedule_analytics("validation_request", {
-            "contact_id": contact_id,
-            "message_length": len(user_message),
-            "is_first_time_user": user_state.is_first_time_user
-        })
+    #     # Schedule analytics logging for validation request (background)
+    #     _schedule_analytics("validation_request", {
+    #         "contact_id": contact_id,
+    #         "message_length": len(user_message),
+    #         "is_first_time_user": user_state.is_first_time_user
+    #     })
         
-        # Save user message first
-        user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
+    #     # Save user message first
+    #     user_msg_id = await _ensure_user_message_saved(user_message, user_id, session_id, req.reply_to_id)
         
-        # Send typing indicator before processing (only if not already sent)
-        if not typing_sent:
-            try:
-                await adapter.send_typing(service_url, conv_id)
-            except Exception as e:
-                logger.warning(f"Failed to send typing indicator: {e}")
+    #     # Send typing indicator before processing (only if not already sent)
+    #     if not typing_sent:
+    #         try:
+    #             await adapter.send_typing(service_url, conv_id)
+    #         except Exception as e:
+    #             logger.warning(f"Failed to send typing indicator: {e}")
         
-        # Call external validation API
-        try:
-            logger.info(f"Calling external validation API for contact {contact_id}")
-            validation_result = await external_validation_client.validate_combined(
-                contact_id=contact_id,
-                user_id=user_id,
-                user_name=user_name
-            )
+    #     # Call external validation API
+    #     try:
+    #         logger.info(f"Calling external validation API for contact {contact_id}")
+    #         validation_result = await external_validation_client.validate_combined(
+    #             contact_id=contact_id,
+    #             user_id=user_id,
+    #             user_name=user_name
+    #         )
             
-            if validation_result.is_success():
-                contact_response = validation_result.value.get('message', 'No response available')
-                intent_type = "combined_validation"
-                logger.info(f"External validation successful for contact {contact_id}")
+    #         if validation_result.is_success():
+    #             contact_response = validation_result.value.get('message', 'No response available')
+    #             intent_type = "combined_validation"
+    #             logger.info(f"External validation successful for contact {contact_id}")
                 
-                # Schedule analytics for successful validation (background)
-                _schedule_analytics("validation_success", {
-                    "contact_id": contact_id,
-                    "response_length": len(contact_response)
-                })
-            else:
-                # Handle validation error
-                error_msg = validation_result.error
-                if "Invalid contact ID" in error_msg:
-                    from uwbot.utils.validation_responses import format_invalid_contact_id_response
-                    contact_response = format_invalid_contact_id_response(contact_id)
-                    intent_type = "error"
-                    logger.warning(f"Invalid contact ID in Teams message: {error_msg}")
+    #             # Schedule analytics for successful validation (background)
+    #             _schedule_analytics("validation_success", {
+    #                 "contact_id": contact_id,
+    #                 "response_length": len(contact_response)
+    #             })
+    #         else:
+    #             # Handle validation error
+    #             error_msg = validation_result.error
+    #             if "Invalid contact ID" in error_msg:
+    #                 from uwbot.utils.validation_responses import format_invalid_contact_id_response
+    #                 contact_response = format_invalid_contact_id_response(contact_id)
+    #                 intent_type = "error"
+    #                 logger.warning(f"Invalid contact ID in Teams message: {error_msg}")
                     
-                    # Schedule analytics for invalid contact ID (background)
-                    _schedule_analytics("validation_error", {
-                        "contact_id": contact_id,
-                        "error_type": "invalid_contact_id"
-                    })
-                else:
-                    from uwbot.utils.validation_responses import format_error_response
-                    contact_response = format_error_response(contact_id, f"Error validating contact {contact_id}: {error_msg}", "validation")
-                    intent_type = "error"
+    #                 # Schedule analytics for invalid contact ID (background)
+    #                 _schedule_analytics("validation_error", {
+    #                     "contact_id": contact_id,
+    #                     "error_type": "invalid_contact_id"
+    #                 })
+    #             else:
+    #                 from uwbot.utils.validation_responses import format_error_response
+    #                 contact_response = format_error_response(contact_id, f"Error validating contact {contact_id}: {error_msg}", "validation")
+    #                 intent_type = "error"
                 
-        except Exception as e:
-            logger.error(f"External validation API error: {e}")
-            from uwbot.utils.validation_responses import format_error_response
-            contact_response = format_error_response(contact_id, f"Service temporarily unavailable. Please try again later.", "validation")
-            intent_type = "error"
+    #     except Exception as e:
+    #         logger.error(f"External validation API error: {e}")
+    #         from uwbot.utils.validation_responses import format_error_response
+    #         contact_response = format_error_response(contact_id, f"Service temporarily unavailable. Please try again later.", "validation")
+    #         intent_type = "error"
             
-            # Schedule analytics for API error (background)
-            _schedule_analytics("validation_error", {
-                "contact_id": contact_id,
-                "error_type": "api_error"
-            })
+    #         # Schedule analytics for API error (background)
+    #         _schedule_analytics("validation_error", {
+    #             "contact_id": contact_id,
+    #             "error_type": "api_error"
+    #         })
 
     # Check for pure greetings using message.py utility
     is_pure_greeting_result = is_pure_greeting(user_message)
